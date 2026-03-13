@@ -148,7 +148,9 @@ export default function ProfileScreen() {
           {activeTab === "내 플리" && (
             <MyPlaylistsTab
               playlists={playlists}
-              onPress={id => router.push(`/result/${id}`)}
+              onPress={(id: string) =>
+                router.push(`/result/${encodeURIComponent(id)}` as any)
+              }
               onLike={toggleLike}
             />
           )}
@@ -158,7 +160,7 @@ export default function ProfileScreen() {
               toggleMap={toggleMap}
               onLogout={() => {
                 logout();
-                router.replace("/(auth)/login");
+                router.replace("/auth/login" as any);
               }}
             />
           )}

@@ -1,894 +1,808 @@
+// app/auth/login.tsx
 // ─────────────────────────────────────────────────────────
-//  [s-landing] 랜딩 화면 → [s-login] Spotify 로그인 화면
-//  두 화면을 하나의 파일에서 animated 전환으로 구현
+//  Landing (Neon) — 앱 첫 진입 화면
+//  - 로고 주변 빛 번짐 + 파동(이퀄라이저) 애니메이션
+//  - Spotify 로그인 버튼 → /auth/spotify (추후 구현)
 // ─────────────────────────────────────────────────────────
 import { LinearGradient } from "expo-linear-gradient";
 import { router } from "expo-router";
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   Animated,
-  Dimensions,
+  Image,
   ScrollView,
-  StatusBar,
   StyleSheet,
   Text,
   TouchableOpacity,
+  useWindowDimensions,
   View,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import EqBars from "../../src/components/ai/EqBars";
-import { GlassButton, PrimaryButton } from "../../src/components/common/Button";
-import LogoIcon from "../../src/components/common/LogoIcon";
-import PulseRings from "../../src/components/common/PulseRings";
-import ScreenBackground from "../../src/components/common/ScreenBackground";
+import Svg, {
+  Circle,
+  Defs,
+  Path,
+  Stop,
+  LinearGradient as SvgLinearGradient,
+  Text as SvgText,
+} from "react-native-svg";
 import { Colors } from "../../src/constants/colors";
-import { FontSize, Radius } from "../../src/constants/layout";
-import { useAppStore } from "../../src/store/useAppStore";
 
-const { width: W } = Dimensions.get("window");
-
-// ── 피처 알약 데이터 ─────────────────────────────────────
 const FEATURE_PILLS = [
   { icon: "🤖", label: "AI 취향 분석" },
-  { icon: "⚡", label: "3초 생성" },
-  { icon: "🎵", label: "Spotify 연동" },
   { icon: "✨", label: "무드 기반 추천" },
+  { icon: "⚡", label: "빠른 생성" },
+  { icon: "🎵", label: "Spotify 연동" },
 ];
 
-// ── OAuth 연결 dots 데이터 ────────────────────────────────
-const DOT_DELAYS = [0, 150, 300, 450, 600];
+function clamp(n: number, min: number, max: number) {
+  "worklet";
+  return Math.max(min, Math.min(max, n));
+}
 
-type Screen = "landing" | "login" | "loginManual" | "oauth" | "perm";
+function SoftOrb({
+  size,
+  color,
+  style,
+  duration = 9000,
+  amplitude = 18,
+}: {
+  size: number;
+  color: string;
+  style?: any;
+  duration?: number;
+  amplitude?: number;
+}) {
+  const t = useRef(new Animated.Value(0)).current;
 
-export default function LoginScreen() {
-  const insets = useSafeAreaInsets();
-  const [screen, setScreen] = useState<Screen>("landing");
-  const slideAnim = useRef(new Animated.Value(0)).current;
-  const fadeAnim = useRef(new Animated.Value(1)).current;
-  const oauthProgress = useRef(new Animated.Value(0)).current;
-  const oauthStep = useRef(0);
-  const [oauthStepState, setOauthStepState] = useState(0);
-
-  // OAuth 자동 진행 시뮬레이션
   useEffect(() => {
-    if (screen !== "oauth") return;
-    let step = 0;
-    const timer = setInterval(() => {
-      step++;
-      setOauthStepState(step);
-      if (step >= 3) {
-        clearInterval(timer);
-        setTimeout(() => goTo("perm"), 600);
-      }
-    }, 800);
-    return () => clearInterval(timer);
-  }, [screen]);
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(t, { toValue: 1, duration, useNativeDriver: true }),
+        Animated.timing(t, { toValue: 0, duration, useNativeDriver: true }),
+      ]),
+    );
+    loop.start();
+    return () => loop.stop();
+  }, [duration, t]);
 
-  // 권한 허용 후 앱 진입
-  useEffect(() => {
-    if (screen !== "perm") return;
-  }, [screen]);
-
-  function goTo(next: Screen) {
-    Animated.sequence([
-      Animated.timing(fadeAnim, {
-        toValue: 0,
-        duration: 180,
-        useNativeDriver: true,
-      }),
-    ]).start(() => {
-      setScreen(next);
-      Animated.timing(fadeAnim, {
-        toValue: 1,
-        duration: 280,
-        useNativeDriver: true,
-      }).start();
-    });
-  }
-
-  // 개발 중 - 실제 auth 없이 바로 탭으로 이동
-  function doLogin() {
-    useAppStore.getState().setTokens({
-      accessToken: "mock_token",
-      refreshToken: "mock_refresh",
-      expiresAt: Date.now() + 3600 * 1000,
-    });
-    goTo("oauth");
-  }
-
-  function allowPerm() {
-    router.replace("/(tabs)");
-  }
+  const translateX = t.interpolate({
+    inputRange: [0, 1],
+    outputRange: [-amplitude, amplitude],
+  });
+  const translateY = t.interpolate({
+    inputRange: [0, 1],
+    outputRange: [amplitude, -amplitude],
+  });
+  const scale = t.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0.98, 1.04],
+  });
+  const opacity = t.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0.55, 0.85],
+  });
 
   return (
-    <ScreenBackground>
-      <StatusBar barStyle="light-content" />
-      <Animated.View style={[{ flex: 1 }, { opacity: fadeAnim }]}>
-        {screen === "landing" && (
-          <LandingView
-            insets={insets}
-            onSpotify={() => goTo("login")}
-            onDemo={() => router.replace("/(tabs)")}
-          />
-        )}
-        {screen === "login" && (
-          <LoginView
-            insets={insets}
-            onBack={() => goTo("landing")}
-            onLogin={doLogin}
-            onManual={() => goTo("loginManual")}
-          />
-        )}
-        {screen === "oauth" && (
-          <OAuthView insets={insets} step={oauthStepState} />
-        )}
-        {screen === "perm" && (
-          <PermView
-            insets={insets}
-            onAllow={allowPerm}
-            onDeny={() => goTo("login")}
-          />
-        )}
-      </Animated.View>
-    </ScreenBackground>
+    <Animated.View
+      pointerEvents="none"
+      style={[
+        {
+          position: "absolute",
+          width: size,
+          height: size,
+          borderRadius: size / 2,
+          backgroundColor: color,
+          opacity,
+          transform: [{ translateX }, { translateY }, { scale }],
+          shadowColor: color,
+          shadowOffset: { width: 0, height: 0 },
+          shadowOpacity: 0.55,
+          shadowRadius: 60,
+          elevation: 1,
+        },
+        style,
+      ]}
+    />
   );
 }
 
-// ════════════════════════════════════════════════════════
-//  LANDING VIEW
-// ════════════════════════════════════════════════════════
-function LandingView({ insets, onSpotify, onDemo }: any) {
-  const titleAnim = useRef(new Animated.Value(0)).current;
+function GlowBloom({
+  size,
+  intensity = 1,
+}: {
+  size: number;
+  intensity?: number;
+}) {
+  const t = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
-    Animated.timing(titleAnim, {
-      toValue: 1,
-      duration: 700,
-      delay: 200,
-      useNativeDriver: true,
-    }).start();
-  }, []);
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(t, {
+          toValue: 1,
+          duration: 2100,
+          useNativeDriver: true,
+        }),
+        Animated.timing(t, {
+          toValue: 0,
+          duration: 2100,
+          useNativeDriver: true,
+        }),
+      ]),
+    );
+    loop.start();
+    return () => loop.stop();
+  }, [t]);
+
+  const opacity = t.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0.16 * intensity, 0.34 * intensity],
+  });
+  const scale = t.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0.96, 1.06],
+  });
 
   return (
-    <View style={{ flex: 1 }}>
-      {/* 이퀄라이저 배경 바 */}
-      <EqBars barCount={28} />
+    <Animated.View
+      pointerEvents="none"
+      style={[
+        styles.bloom,
+        {
+          width: size,
+          height: size,
+          borderRadius: size / 2,
+          opacity,
+          transform: [{ scale }],
+        },
+      ]}
+    />
+  );
+}
 
-      <View style={[styles.landingContent, { paddingTop: insets.top + 20 }]}>
-        {/* 로고 + 펄스 링 */}
-        <View style={styles.logoSection}>
-          <PulseRings
-            rings={[
+function NeonRings({ size }: { size: number }) {
+  const t = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(t, {
+          toValue: 1,
+          duration: 2600,
+          useNativeDriver: true,
+        }),
+        Animated.timing(t, { toValue: 0, duration: 0, useNativeDriver: true }),
+      ]),
+    );
+    loop.start();
+    return () => loop.stop();
+  }, [t]);
+
+  const rings = [
+    { s: size, w: 3, o: 0.48, d: 0 },
+    { s: size * 1.04, w: 4, o: 0.44, d: 0.18 },
+    { s: size * 0.96, w: 3, o: 0.4, d: 0.36 },
+  ];
+
+  return (
+    <View style={styles.rings} pointerEvents="none">
+      {rings.map((r, i) => {
+        const local = Animated.modulo(Animated.add(t, r.d), 1);
+        const scale = local.interpolate({
+          inputRange: [0, 1],
+          outputRange: [0.98, 1.07],
+        });
+        const opacity = local.interpolate({
+          inputRange: [0, 1],
+          outputRange: [r.o, 0.06],
+        });
+        return (
+          <Animated.View
+            key={i}
+            style={[
+              styles.ringGlow,
               {
-                size: 190,
-                borderWidth: 1,
-                opacity: 0.06,
-                delay: 0,
-                color: Colors.green,
-              },
-              {
-                size: 160,
-                borderWidth: 1,
-                opacity: 0.12,
-                delay: 300,
-                color: Colors.green,
-              },
-              {
-                size: 134,
-                borderWidth: 1.5,
-                opacity: 0.22,
-                delay: 600,
-                color: Colors.green,
+                width: r.s,
+                height: r.s,
+                borderRadius: r.s / 2,
+                opacity,
+                transform: [{ scale }],
               },
             ]}
-          />
-          <LogoIcon size={120} radius={28} animated />
-        </View>
-
-        {/* 타이틀 */}
-        <Animated.View
-          style={{ opacity: titleAnim, alignItems: "center", gap: 8 }}
-        >
-          <Text style={styles.landTitle}>기분을 음악으로</Text>
-          <Text style={styles.landSub}>AI가 지금 이 순간 당신에게 딱 맞는</Text>
-          <Text style={styles.landSub}>플레이리스트를 만들어드려요</Text>
-        </Animated.View>
-
-        {/* 피처 알약 */}
-        <View style={styles.pillsRow}>
-          {FEATURE_PILLS.map((p, i) => (
-            <View key={i} style={styles.featurePill}>
-              <Text style={styles.featurePillText}>
-                {p.icon} {p.label}
-              </Text>
-            </View>
-          ))}
-        </View>
-      </View>
-
-      {/* 하단 버튼 영역 */}
-      <View
-        style={[styles.landingBottom, { paddingBottom: insets.bottom + 24 }]}
-      >
-        <PrimaryButton
-          label="Spotify로 로그인"
-          onPress={onSpotify}
-          style={{ width: "100%" }}
-        />
-        <GlassButton
-          label="데모로 체험해보기"
-          onPress={onDemo}
-          style={{ width: "100%", marginTop: 10 }}
-        />
-        <Text style={styles.terms}>
-          계속하면 <Text style={{ color: Colors.green }}>서비스 이용약관</Text>{" "}
-          및 <Text style={{ color: Colors.green }}>개인정보처리방침</Text>에
-          동의하게 됩니다
-        </Text>
-      </View>
-    </View>
-  );
-}
-
-// ════════════════════════════════════════════════════════
-//  LOGIN VIEW (Spotify 앱 연동)
-// ════════════════════════════════════════════════════════
-function LoginView({ insets, onBack, onLogin, onManual }: any) {
-  const dotAnims = useRef(
-    DOT_DELAYS.map(() => new Animated.Value(0.22)),
-  ).current;
-
-  useEffect(() => {
-    const anims = dotAnims.map((a, i) =>
-      Animated.loop(
-        Animated.sequence([
-          Animated.delay(DOT_DELAYS[i]),
-          Animated.timing(a, {
-            toValue: 1,
-            duration: 400,
-            useNativeDriver: false,
-          }),
-          Animated.timing(a, {
-            toValue: 0.22,
-            duration: 400,
-            useNativeDriver: false,
-          }),
-        ]),
-      ),
-    );
-    Animated.parallel(anims).start();
-    return () => anims.forEach(a => a.stop());
-  }, []);
-
-  return (
-    <View style={{ flex: 1 }}>
-      {/* 헤더 */}
-      <View style={[styles.topBar, { paddingTop: insets.top + 12 }]}>
-        <TouchableOpacity style={styles.backBtn} onPress={onBack}>
-          <Text style={styles.backBtnText}>←</Text>
-        </TouchableOpacity>
-        <View style={styles.spBrand}>
-          <View style={styles.spLogo}>
-            <Text style={{ fontSize: 14, color: "#fff" }}>♪</Text>
-          </View>
-          <Text style={styles.spBrandText}>Spotify 계정으로 시작</Text>
-        </View>
-      </View>
-
-      <ScrollView
-        contentContainerStyle={[
-          styles.loginBody,
-          { paddingBottom: insets.bottom + 24 },
-        ]}
-        showsVerticalScrollIndicator={false}
-      >
-        {/* 연동 다이어그램 */}
-        <View style={styles.connectDiagram}>
-          {/* Spotify */}
-          <View style={[styles.iconBox, { backgroundColor: Colors.spotify }]}>
-            <Text style={{ fontSize: 28, color: "#fff" }}>♪</Text>
-          </View>
-
-          {/* 연결 dots */}
-          <View style={styles.dotsRow}>
-            {dotAnims.map((anim, i) => (
-              <Animated.View
-                key={i}
-                style={[
-                  styles.dot,
-                  {
-                    backgroundColor: anim.interpolate({
-                      inputRange: [0.22, 1],
-                      outputRange: ["rgba(61,220,132,0.22)", Colors.green],
-                    }),
-                    transform: [
-                      {
-                        scale: anim.interpolate({
-                          inputRange: [0.22, 1],
-                          outputRange: [0.8, 1.2],
-                        }),
-                      },
-                    ],
-                  },
-                ]}
-              />
-            ))}
-          </View>
-
-          {/* MoodTune */}
-          <LogoIcon size={72} radius={18} animated />
-        </View>
-
-        <Text style={styles.loginTitle}>Spotify 앱으로 바로 연동</Text>
-        <Text style={styles.loginSub}>비밀번호 없이 안전하게 연결해요</Text>
-
-        {/* 앱 감지 배너 */}
-        <View style={styles.detectBanner}>
-          <View style={styles.detectDot} />
-          <Text style={styles.detectText}>
-            Spotify 앱 감지됨 · 바로 연동 가능
-          </Text>
-        </View>
-
-        {/* 메인 CTA */}
-        <PrimaryButton
-          label="Spotify 앱으로 로그인"
-          onPress={onLogin}
-          style={{ width: "100%", marginBottom: 12 }}
-        />
-
-        {/* 구분선 */}
-        <View style={styles.divider}>
-          <View style={styles.dividerLine} />
-          <Text style={styles.dividerText}>또는</Text>
-          <View style={styles.dividerLine} />
-        </View>
-
-        {/* 대체 옵션 */}
-        <TouchableOpacity style={styles.socialBtn} onPress={onManual}>
-          <Text style={styles.socialBtnText}>웹 브라우저로 로그인</Text>
-        </TouchableOpacity>
-        <TouchableOpacity style={[styles.socialBtn, { marginTop: 8 }]}>
-          <Text style={styles.socialBtnText}>Spotify 앱 설치하기</Text>
-        </TouchableOpacity>
-
-        <Text style={[styles.terms, { marginTop: 20 }]}>
-          🔒 OAuth 2.0으로 안전하게 보호됩니다
-        </Text>
-      </ScrollView>
-    </View>
-  );
-}
-
-// ════════════════════════════════════════════════════════
-//  OAUTH LOADING VIEW
-// ════════════════════════════════════════════════════════
-const OAUTH_STEPS = ["Spotify 앱 연결", "계정 인증 중", "MoodTune 연동"];
-
-function OAuthView({ insets, step }: { insets: any; step: number }) {
-  const dotAnims = useRef(
-    DOT_DELAYS.map(() => new Animated.Value(0.22)),
-  ).current;
-
-  useEffect(() => {
-    const anims = dotAnims.map((a, i) =>
-      Animated.loop(
-        Animated.sequence([
-          Animated.delay(DOT_DELAYS[i] * 0.8),
-          Animated.timing(a, {
-            toValue: 1,
-            duration: 350,
-            useNativeDriver: false,
-          }),
-          Animated.timing(a, {
-            toValue: 0.22,
-            duration: 350,
-            useNativeDriver: false,
-          }),
-        ]),
-      ),
-    );
-    Animated.parallel(anims).start();
-    return () => anims.forEach(a => a.stop());
-  }, []);
-
-  return (
-    <View style={[styles.oauthContainer, { paddingTop: insets.top + 20 }]}>
-      <Text style={styles.oauthTitle}>Spotify 연결 중...</Text>
-      <Text style={styles.oauthSub}>잠시만 기다려주세요</Text>
-
-      {/* 큰 연결 다이어그램 */}
-      <View style={styles.oauthDiagram}>
-        <View style={[styles.iconBoxLg, { backgroundColor: Colors.spotify }]}>
-          <Text style={{ fontSize: 36, color: "#fff" }}>♪</Text>
-        </View>
-        <View style={styles.dotsRow}>
-          {dotAnims.map((anim, i) => (
-            <Animated.View
-              key={i}
+          >
+            <View
               style={[
-                styles.dot,
+                styles.ringSoft,
                 {
-                  backgroundColor: anim.interpolate({
-                    inputRange: [0.22, 1],
-                    outputRange: ["rgba(61,220,132,0.22)", Colors.green],
-                  }),
+                  width: "100%",
+                  height: "100%",
+                  borderRadius: r.s / 2,
+                  borderWidth: r.w * 6,
                 },
               ]}
             />
-          ))}
-        </View>
-        <LogoIcon size={88} radius={22} animated />
-      </View>
-
-      {/* 진행 단계 */}
-      <View style={styles.oauthSteps}>
-        {OAUTH_STEPS.map((s, i) => (
-          <View key={i} style={styles.oauthStep}>
             <View
               style={[
-                styles.stepDot,
-                i < step && styles.stepDotDone,
-                i === step && styles.stepDotActive,
+                styles.ringLine,
+                {
+                  width: "100%",
+                  height: "100%",
+                  borderRadius: r.s / 2,
+                  borderWidth: r.w,
+                },
               ]}
-            >
-              <Text
-                style={{
-                  fontSize: 10,
-                  color: i < step ? "#000" : Colors.t3,
-                  fontWeight: "700",
-                }}
-              >
-                {i < step ? "✓" : i + 1}
-              </Text>
-            </View>
-            {i < OAUTH_STEPS.length - 1 && (
-              <View
-                style={[styles.stepLine, i < step && styles.stepLineDone]}
-              />
-            )}
-            <Text style={[styles.stepText, i <= step && { color: Colors.t1 }]}>
-              {s}
-            </Text>
-          </View>
-        ))}
-      </View>
+            />
+          </Animated.View>
+        );
+      })}
     </View>
   );
 }
 
-// ════════════════════════════════════════════════════════
-//  PERMISSION VIEW
-// ════════════════════════════════════════════════════════
-const PERMISSIONS = [
-  {
-    icon: "🎵",
-    title: "재생 목록 읽기 및 쓰기",
-    desc: "플레이리스트 생성/저장",
-  },
-  { icon: "👤", title: "프로필 정보 접근", desc: "이름, 사진 등 기본 정보" },
-  { icon: "⭐", title: "라이브러리 접근", desc: "좋아요 및 저장 기능" },
-  { icon: "▶️", title: "현재 재생 상태", desc: "재생 제어 및 상태 확인" },
-];
+function GradientText({
+  text,
+  colors,
+  style,
+  width,
+  height,
+  align = "left",
+}: {
+  text: string;
+  colors: [string, string, string];
+  style: any;
+  width?: number;
+  height?: number;
+  align?: "left" | "center";
+}) {
+  const [layout, setLayout] = useState<{ w: number; h: number }>({
+    w: 0,
+    h: 0,
+  });
+  const gradientId = useMemo(
+    () => `g-${Math.random().toString(36).slice(2, 9)}`,
+    [],
+  );
+  const flat = StyleSheet.flatten(style) ?? {};
+  const fontSize = Number(flat.fontSize ?? 36);
+  const fontFamily = flat.fontFamily;
+  const letterSpacing = flat.letterSpacing;
+  const fontWeight = flat.fontWeight;
+  const strokeWidth = 8;
+  const padX = Math.ceil(strokeWidth / 2) + 6;
+  const targetW = Math.ceil(width ?? layout.w);
+  const targetH = Math.ceil((height ?? layout.h) || fontSize * 1.2);
+  const isCenter = align === "center";
 
-function PermView({ insets, onAllow, onDeny }: any) {
   return (
-    <View style={{ flex: 1 }}>
-      {/* Spotify 헤더 */}
-      <LinearGradient
-        colors={["rgba(29,185,84,0.15)", "transparent"]}
-        style={[styles.permHeader, { paddingTop: insets.top + 12 }]}
+    <View
+      style={[
+        styles.gradWrap,
+        width ? { width } : null,
+        height ? { height } : null,
+        isCenter ? { alignItems: "center" } : null,
+      ]}
+    >
+      <Text
+        onLayout={e => {
+          const { width, height } = e.nativeEvent.layout;
+          if (width !== layout.w || height !== layout.h)
+            setLayout({ w: width, h: height });
+        }}
+        style={[style, { opacity: 0, paddingHorizontal: padX, width }]}
       >
+        {text}
+      </Text>
+
+      {targetW > 0 && targetH > 0 ? (
+        <Svg width={targetW} height={targetH} style={StyleSheet.absoluteFill}>
+          <Defs>
+            <SvgLinearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
+              <Stop offset="0" stopColor={colors[0]} />
+              <Stop offset="0.55" stopColor={colors[1]} />
+              <Stop offset="1" stopColor={colors[2]} />
+            </SvgLinearGradient>
+          </Defs>
+          <SvgText
+            x={isCenter ? targetW / 2 : padX}
+            y={fontSize}
+            fill={colors[1]}
+            opacity={0.08}
+            stroke={colors[1]}
+            strokeWidth={strokeWidth}
+            strokeOpacity={0.06}
+            fontSize={fontSize}
+            fontFamily={fontFamily}
+            fontWeight={fontWeight}
+            letterSpacing={letterSpacing}
+            textAnchor={isCenter ? "middle" : undefined}
+          >
+            {text}
+          </SvgText>
+          <SvgText
+            x={isCenter ? targetW / 2 : padX}
+            y={fontSize}
+            fill={`url(#${gradientId})`}
+            fontSize={fontSize}
+            fontFamily={fontFamily}
+            fontWeight={fontWeight}
+            letterSpacing={letterSpacing}
+            textAnchor={isCenter ? "middle" : undefined}
+          >
+            {text}
+          </SvgText>
+        </Svg>
+      ) : null}
+    </View>
+  );
+}
+
+function SpotifyIcon({
+  size = 22,
+  color = "#000",
+}: {
+  size?: number;
+  color?: string;
+}) {
+  // spotify glyph (simplified) path
+  // source: hand-tuned for RN-SVG viewBox 0 0 24 24
+  const d1 =
+    "M5.2 9.4c4.4-1.2 9.4-.9 13.5 1.1.4.2.6.7.4 1.1-.2.4-.7.6-1.1.4-3.7-1.8-8.3-2.1-12.3-1-.4.1-.9-.1-1-.6-.1-.4.1-.9.5-1z";
+  const d2 =
+    "M6.2 12.8c3.6-1 7.6-.7 10.9.9.4.2.5.6.3 1-.2.4-.6.5-1 .3-3-1.4-6.6-1.7-9.8-.8-.4.1-.8-.1-.9-.5-.1-.4.1-.8.5-.9z";
+  const d3 =
+    "M7.1 16c2.9-.8 6-.6 8.6.7.3.2.4.5.2.9-.2.3-.5.4-.9.2-2.3-1.2-5.1-1.4-7.7-.6-.3.1-.7-.1-.8-.4-.1-.4.1-.7.6-.8z";
+
+  return (
+    <Svg width={size} height={size} viewBox="0 0 24 24">
+      <Circle cx="12" cy="12" r="10" fill={color} opacity={0.08} />
+      <Path d={d1} fill={color} />
+      <Path d={d2} fill={color} />
+      <Path d={d3} fill={color} />
+    </Svg>
+  );
+}
+
+export default function LoginScreen() {
+  const insets = useSafeAreaInsets();
+  const { width: W, height: H } = useWindowDimensions();
+  const titleT = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    Animated.timing(titleT, {
+      toValue: 1,
+      duration: 800,
+      delay: 200,
+      useNativeDriver: true,
+    }).start();
+  }, [titleT]);
+
+  const titleStyle = useMemo(() => {
+    const opacity = titleT.interpolate({
+      inputRange: [0, 1],
+      outputRange: [0, 1],
+    });
+    const translateY = titleT.interpolate({
+      inputRange: [0, 1],
+      outputRange: [10, 0],
+    });
+    return { opacity, transform: [{ translateY }] };
+  }, [titleT]);
+
+  const usableH = H - insets.top - insets.bottom;
+  const uiScale = clamp(usableH / 780, 0.82, 1);
+  const stage = Math.min(W * 0.92, 360, usableH * 0.34) * uiScale;
+  const ring = stage * 0.88;
+  const circle = stage * 0.65;
+  const heroSize = clamp(W * 0.48, 28, 36) * uiScale;
+  const subSize = clamp(W * 0.048, 16, 17.5) * uiScale;
+  const pillSize = clamp(W * 0.036, 12, 15) * uiScale;
+  const logoGap = clamp(usableH * 0.03, 14, 22) * uiScale;
+  const spotifyBtnH = Math.round(clamp(usableH * 0.095, 54, 64));
+  const demoBtnH = Math.round(clamp(usableH * 0.078, 46, 52));
+  const spotifyFont = Math.round(clamp(22 * uiScale, 18, 22));
+  const demoFont = Math.round(clamp(20 * uiScale, 16, 20));
+  const containerPadding = {
+    paddingTop: insets.top + 18,
+    paddingBottom: insets.bottom + 20,
+  };
+  const pageMinH = Math.max(
+    0,
+    H - containerPadding.paddingTop - containerPadding.paddingBottom,
+  );
+
+  const content = (
+    <View style={[styles.page, { minHeight: pageMinH }]}>
+      <View style={styles.main}>
+        {/* Top: Logo + rings */}
         <View
           style={[
-            styles.iconBox,
-            { backgroundColor: Colors.spotify, alignSelf: "center" },
+            styles.logoStage,
+            { width: stage, height: stage, marginBottom: logoGap },
           ]}
         >
-          <Text style={{ fontSize: 24, color: "#fff" }}>♪</Text>
+          <GlowBloom size={stage * 1.16} intensity={0.9} />
+          <NeonRings size={ring} />
+
+          <View
+            style={[
+              styles.logoCircle,
+              { width: circle, height: circle, borderRadius: circle / 2 },
+            ]}
+          >
+            <GlowBloom size={circle * 1.18} intensity={0.65} />
+            <LinearGradient
+              colors={[
+                "rgba(255,255,255,0.06)",
+                "rgba(255,255,255,0.00)",
+                "rgba(0,0,0,0.10)",
+              ]}
+              start={{ x: 0.2, y: 0 }}
+              end={{ x: 0.8, y: 1 }}
+              style={StyleSheet.absoluteFill}
+            />
+            <Image
+              source={require("../../assets/images/moodtune-logo.png")}
+              resizeMode="contain"
+              style={{ width: circle * 0.98, height: circle * 0.98 }}
+            />
+          </View>
         </View>
-      </LinearGradient>
 
-      <ScrollView
-        contentContainerStyle={[
-          styles.permBody,
-          { paddingBottom: insets.bottom + 24 },
-        ]}
-        showsVerticalScrollIndicator={false}
-      >
-        {/* 앱 아이콘 */}
-        <LogoIcon
-          size={52}
-          radius={14}
-          animated={false}
-          style={{ alignSelf: "center" }}
-        />
-        <Text
-          style={[styles.loginTitle, { textAlign: "center", marginTop: 10 }]}
+        {/* Middle: Copy + pills */}
+        <Animated.View
+          style={[
+            styles.copy,
+            titleStyle,
+            { gap: 10 * uiScale, marginBottom: 20 * uiScale },
+          ]}
         >
-          MoodTune이 권한을 요청합니다
-        </Text>
+          <GradientText
+            text="기분을 음악으로"
+            colors={["#effff7", Colors.greenL, Colors.green]}
+            width={Math.min(420, W - 44)}
+            height={heroSize * 1.4}
+            align="center"
+            style={[
+              styles.heroAll,
+              { fontSize: heroSize, lineHeight: Math.ceil(heroSize * 1.02) },
+            ]}
+          />
+          <Text
+            style={[
+              styles.sub,
+              {
+                fontSize: subSize,
+                lineHeight: Math.ceil(subSize * 1.4),
+                marginTop: 4 * uiScale,
+              },
+            ]}
+          >
+            AI가 지금 이 순간 당신에게 딱 맞는
+          </Text>
+          <Text
+            style={[
+              styles.sub,
+              { fontSize: subSize, lineHeight: Math.ceil(subSize * 1) },
+            ]}
+          >
+            플레이리스트를 만들어드려요
+          </Text>
+        </Animated.View>
 
-        {/* 권한 항목 */}
-        <View style={{ gap: 8, marginTop: 20, marginBottom: 16 }}>
-          {PERMISSIONS.map((p, i) => (
-            <View key={i} style={styles.permItem}>
-              <Text style={styles.permItemIcon}>{p.icon}</Text>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.permItemTitle}>{p.title}</Text>
-                <Text style={styles.permItemDesc}>{p.desc}</Text>
-              </View>
-              <View style={styles.permCheck}>
-                <Text
-                  style={{ fontSize: 11, color: "#000", fontWeight: "700" }}
-                >
-                  ✓
-                </Text>
-              </View>
+        <View
+          style={[
+            styles.pills,
+            { maxWidth: Math.min(420, W - 44), marginTop: 2 },
+          ]}
+        >
+          {FEATURE_PILLS.map(p => (
+            <View
+              key={p.label}
+              style={[
+                styles.pill,
+                { minWidth: Math.min(148, (W - 60 - 22) / 2) },
+              ]}
+            >
+              <Text style={[styles.pillText, { fontSize: pillSize }]}>
+                <Text style={styles.pillIcon}>{p.icon}</Text> {p.label}
+              </Text>
             </View>
           ))}
         </View>
+      </View>
 
-        {/* 경고 배너 */}
-        <View style={styles.warningBanner}>
-          <Text style={styles.warningText}>
-            ⚠️ Spotify 공식 인증 페이지입니다
-          </Text>
-        </View>
+      {/* Bottom: Buttons + terms */}
+      <View style={styles.bottom}>
+        <TouchableOpacity
+          activeOpacity={0.88}
+          onPress={() => router.push("/auth/spotify" as any)}
+          style={styles.spotifyOuter}
+        >
+          <LinearGradient
+            colors={[Colors.greenL, Colors.green]}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 0 }}
+            style={[styles.spotifyBtn, { height: spotifyBtnH }]}
+          >
+            <SpotifyIcon size={24} color="#07110c" />
+            <Text style={[styles.spotifyText, { fontSize: spotifyFont }]}>
+              Spotify로 로그인
+            </Text>
+          </LinearGradient>
+        </TouchableOpacity>
 
-        {/* 버튼 */}
-        <PrimaryButton
-          label="동의하고 MoodTune 시작하기"
-          onPress={onAllow}
-          style={{ width: "100%", marginBottom: 10 }}
-          fontSize={14}
-        />
-        <GlassButton label="취소" onPress={onDeny} style={{ width: "100%" }} />
+        <TouchableOpacity
+          activeOpacity={0.85}
+          onPress={() => router.replace("/(tabs)" as any)}
+          style={styles.demoOuter}
+        >
+          <LinearGradient
+            colors={["rgba(255,255,255,0.08)", "rgba(255,255,255,0.04)"]}
+            start={{ x: 0.1, y: 0 }}
+            end={{ x: 0.9, y: 1 }}
+            style={[styles.demoBtn, { height: demoBtnH }]}
+          >
+            <Text style={[styles.demoText, { fontSize: demoFont }]}>
+              데모로 체험해보기
+            </Text>
+          </LinearGradient>
+        </TouchableOpacity>
+
+        <Text style={styles.terms}>
+          로그인하면 <Text style={styles.termsAccent}>이용약관</Text> 및{" "}
+          <Text style={styles.termsAccent}>개인정보처리방침</Text>에 동의합니다
+        </Text>
+      </View>
+    </View>
+  );
+
+  return (
+    <View style={styles.bgRoot}>
+      <LinearGradient
+        colors={["#050b08", "#081611", "#040806"]}
+        start={{ x: 0.18, y: 0 }}
+        end={{ x: 0.82, y: 1 }}
+        style={StyleSheet.absoluteFill}
+      />
+      <SoftOrb
+        size={Math.max(520, W * 1.35)}
+        color="rgba(61,220,132,0.18)"
+        style={styles.bgOrbTL}
+        duration={11000}
+        amplitude={22}
+      />
+      <SoftOrb
+        size={Math.max(520, W * 1.25)}
+        color="rgba(35,140,85,0.14)"
+        style={styles.bgOrbBR}
+        duration={13000}
+        amplitude={18}
+      />
+      <SoftOrb
+        size={Math.max(360, W * 0.95)}
+        color="rgba(61,220,132,0.10)"
+        style={styles.bgOrbMid}
+        duration={15000}
+        amplitude={14}
+      />
+
+      <ScrollView
+        style={styles.scroll}
+        bounces={false}
+        showsVerticalScrollIndicator={false}
+        contentContainerStyle={[
+          styles.root,
+          {
+            ...containerPadding,
+          },
+        ]}
+      >
+        {content}
       </ScrollView>
     </View>
   );
 }
 
-// ════════════════════════════════════════════════════════
-//  STYLES
-// ════════════════════════════════════════════════════════
 const styles = StyleSheet.create({
-  // ── Landing ──────────────────────────────────────────
-  landingContent: {
+  bgRoot: {
+    flex: 1,
+    backgroundColor: "#040806",
+    position: "relative",
+    overflow: "hidden",
+  },
+  bgOrbTL: {
+    left: -240,
+    top: -300,
+  },
+  bgOrbBR: {
+    right: -260,
+    bottom: -260,
+  },
+  bgOrbMid: {
+    left: 30,
+    top: 250,
+  },
+  root: {
+    flexGrow: 1,
+    paddingHorizontal: 22,
+    alignItems: "center",
+    justifyContent: "flex-start",
+  },
+  scroll: {
+    flex: 1,
+    alignSelf: "stretch",
+  },
+  page: {
+    width: "100%",
+    alignItems: "center",
+    justifyContent: "flex-start",
+  },
+  main: {
+    flexGrow: 1,
+    width: "100%",
+    alignItems: "center",
+    paddingTop: 18,
+  },
+  center: {
     flex: 1,
     alignItems: "center",
     justifyContent: "center",
-    paddingHorizontal: 24,
-    gap: 22,
   },
-  logoSection: {
-    width: 200,
-    height: 200,
+  logoStage: {
     alignItems: "center",
     justifyContent: "center",
   },
-  landTitle: {
-    fontSize: 28,
-    fontWeight: "900",
-    letterSpacing: -0.8,
-    color: Colors.white,
-    textAlign: "center",
-    // 그라디언트 텍스트는 RN 기본 미지원 → 흰색으로 대체
-    // 실제 구현: react-native-linear-gradient + MaskedView
+  bloom: {
+    position: "absolute",
+    backgroundColor: "rgba(61,220,132,0.14)",
+    shadowColor: Colors.green,
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.85,
+    shadowRadius: 60,
+    elevation: 18,
   },
-  landSub: {
-    fontSize: FontSize.md,
-    color: Colors.t2,
-    textAlign: "center",
-    lineHeight: 20,
+  rings: {
+    position: "absolute",
+    alignItems: "center",
+    justifyContent: "center",
   },
-  pillsRow: {
+  ringGlow: {
+    position: "absolute",
+    alignItems: "center",
+    justifyContent: "center",
+    shadowColor: Colors.green,
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.6,
+    shadowRadius: 22,
+    elevation: 10,
+  },
+  ringLine: {
+    borderColor: "rgba(61,220,132,0.65)",
+    backgroundColor: "transparent",
+  },
+  ringSoft: {
+    position: "absolute",
+    borderColor: "rgba(61,220,132,0.12)",
+    backgroundColor: "transparent",
+  },
+  logoCircle: {
+    backgroundColor: "rgba(8,18,14,0.92)",
+    borderWidth: 2,
+    borderColor: "rgba(61,220,132,0.55)",
+    alignItems: "center",
+    justifyContent: "center",
+    shadowColor: Colors.green,
+    shadowOffset: { width: 0, height: 18 },
+    shadowOpacity: 0.25,
+    shadowRadius: 28,
+    elevation: 12,
+    overflow: "hidden",
+  },
+  copy: {
+    alignItems: "center",
+    gap: 8,
+    marginTop: 12,
+    marginBottom: 26,
+    paddingHorizontal: 10,
+  },
+  heroAll: {
+    fontFamily: "Outfit-Black",
+    letterSpacing: -1.0,
+  },
+  gradWrap: {
+    // 측정용 래퍼 (Svg로 텍스트를 다시 그리기 위해 필요)
+    alignItems: "flex-start",
+    justifyContent: "flex-end",
+    position: "relative",
+  },
+  sub: {
+    color: "rgba(255,255,255,0.52)",
+    fontFamily: "DMSans-Regular",
+    textAlign: "center",
+  },
+  pills: {
     flexDirection: "row",
     flexWrap: "wrap",
     justifyContent: "center",
-    gap: 7,
+    gap: 10,
   },
-  featurePill: {
-    paddingHorizontal: 12,
-    paddingVertical: 7,
-    backgroundColor: Colors.glass,
-    borderRadius: 20,
+  pill: {
+    paddingHorizontal: 5,
+    alignItems: "center",
+    paddingVertical: 8,
+    borderRadius: 999,
+    backgroundColor: "rgba(10,30,22,0.85)",
+    borderWidth: 2,
+    borderColor: "rgba(61,220,132,0.30)",
+  },
+  pillText: {
+    color: "rgba(180,255,226,0.95)",
+    fontFamily: "DMSans-Medium",
+    letterSpacing: -0.3,
+  },
+  pillIcon: {
+    color: "rgba(180,255,226,0.95)",
+  },
+  bottom: {
+    gap: 10,
+    width: "100%",
+    marginTop: 16,
+  },
+  spotifyOuter: {
+    borderRadius: 999,
+    overflow: "hidden",
+    shadowColor: Colors.green,
+    shadowOffset: { width: 0, height: 12 },
+    shadowOpacity: 0.32,
+    shadowRadius: 26,
+    elevation: 14,
     borderWidth: 1,
-    borderColor: Colors.glassBd,
+    borderColor: "rgba(61,220,132,0.25)",
   },
-  featurePillText: {
-    fontSize: FontSize.sm,
-    color: Colors.t1,
+  spotifyBtn: {
+    height: 64,
+    borderRadius: 999,
+    alignItems: "center",
+    justifyContent: "center",
+    flexDirection: "row",
+    gap: 10,
   },
-  landingBottom: {
-    paddingHorizontal: 24,
-    gap: 0,
+  spotifyText: {
+    fontSize: 22,
+    fontWeight: "bold",
+    color: "#07110c",
+    fontFamily: "Outfit-Black",
+    letterSpacing: -0.6,
+  },
+  demoOuter: {
+    borderRadius: 999,
+    overflow: "hidden",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.16)",
+  },
+  demoBtn: {
+    height: 52,
+    borderRadius: 999,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  demoText: {
+    fontSize: 16,
+    color: "rgba(255,255,255,0.75)",
+    fontFamily: "DMSans-Bold",
+    letterSpacing: -0.3,
   },
   terms: {
-    fontSize: FontSize.xs,
-    color: Colors.t3,
+    marginTop: 6,
+    fontSize: 14,
+    color: "rgba(255,255,255,0.24)",
     textAlign: "center",
-    marginTop: 14,
-    lineHeight: 16,
-  },
-
-  // ── Login ─────────────────────────────────────────────
-  topBar: {
-    flexDirection: "row",
-    alignItems: "center",
-    paddingHorizontal: 22,
-    paddingBottom: 16,
-    gap: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: "rgba(255,255,255,0.07)",
-    backgroundColor: "rgba(0,0,0,0.25)",
-  },
-  backBtn: {
-    width: 38,
-    height: 38,
-    borderRadius: 19,
-    backgroundColor: Colors.glass,
-    borderWidth: 1,
-    borderColor: Colors.glassBd,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  backBtnText: {
-    color: Colors.t1,
-    fontSize: 16,
-  },
-  spBrand: {
-    flex: 1,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-  },
-  spLogo: {
-    width: 28,
-    height: 28,
-    borderRadius: 14,
-    backgroundColor: Colors.spotify,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  spBrandText: {
-    fontSize: FontSize.md,
-    color: Colors.t1,
-    fontWeight: "600",
-  },
-  loginBody: {
-    paddingHorizontal: 24,
-    paddingTop: 28,
-    gap: 0,
-  },
-  connectDiagram: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 16,
-    marginBottom: 24,
-  },
-  iconBox: {
-    width: 72,
-    height: 72,
-    borderRadius: 18,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  iconBoxLg: {
-    width: 88,
-    height: 88,
-    borderRadius: 22,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  dotsRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-  },
-  dot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-  },
-  loginTitle: {
-    fontSize: FontSize["5xl"],
-    fontWeight: "700",
-    color: Colors.t1,
-    letterSpacing: -0.4,
-    marginBottom: 6,
-  },
-  loginSub: {
-    fontSize: FontSize.md,
-    color: Colors.t2,
+    fontFamily: "DMSans-Medium",
     lineHeight: 20,
-    marginBottom: 16,
+    paddingHorizontal: 8,
   },
-  detectBanner: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    backgroundColor: "rgba(61,220,132,0.1)",
-    borderRadius: Radius.md,
-    borderWidth: 1,
-    borderColor: "rgba(61,220,132,0.3)",
-    marginBottom: 20,
-  },
-  detectDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    backgroundColor: Colors.green,
-  },
-  detectText: {
-    fontSize: FontSize.base,
-    color: Colors.green,
-    fontWeight: "600",
-  },
-  divider: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 10,
-    marginVertical: 16,
-  },
-  dividerLine: {
-    flex: 1,
-    height: 1,
-    backgroundColor: Colors.glassBd,
-  },
-  dividerText: {
-    fontSize: FontSize.sm,
-    color: Colors.t3,
-  },
-  socialBtn: {
-    height: 46,
-    backgroundColor: "rgba(255,255,255,0.06)",
-    borderWidth: 1.5,
-    borderColor: "rgba(255,255,255,0.11)",
-    borderRadius: Radius.md,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  socialBtnText: {
-    fontSize: FontSize.md,
-    color: Colors.t2,
-    fontWeight: "500",
-  },
-
-  // ── OAuth ─────────────────────────────────────────────
-  oauthContainer: {
-    flex: 1,
-    paddingHorizontal: 24,
-    alignItems: "center",
-    gap: 12,
-  },
-  oauthTitle: {
-    fontSize: FontSize["4xl"],
-    fontWeight: "700",
-    color: Colors.t1,
-    letterSpacing: -0.4,
-    marginTop: 8,
-  },
-  oauthSub: {
-    fontSize: FontSize.md,
-    color: Colors.t2,
-    marginBottom: 32,
-  },
-  oauthDiagram: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 18,
-    marginBottom: 40,
-  },
-  oauthSteps: {
-    width: "100%",
-    gap: 0,
-    backgroundColor: Colors.glass,
-    borderRadius: Radius.lg,
-    borderWidth: 1,
-    borderColor: Colors.glassBd,
-    padding: 20,
-  },
-  oauthStep: {
-    flexDirection: "row",
-    alignItems: "flex-start",
-    gap: 14,
-    paddingVertical: 2,
-  },
-  stepDot: {
-    width: 24,
-    height: 24,
-    borderRadius: 12,
-    backgroundColor: "transparent",
-    borderWidth: 1,
-    borderColor: Colors.t3,
-    alignItems: "center",
-    justifyContent: "center",
-    flexShrink: 0,
-    marginTop: 2,
-  },
-  stepDotDone: {
-    backgroundColor: Colors.green,
-    borderColor: Colors.green,
-  },
-  stepDotActive: {
-    borderColor: Colors.green,
-  },
-  stepLine: {
-    position: "absolute",
-    left: 11,
-    top: 28,
-    width: 2,
-    height: 30,
-    backgroundColor: Colors.glassBd,
-  },
-  stepLineDone: {
-    backgroundColor: Colors.green,
-    opacity: 0.5,
-  },
-  stepText: {
-    fontSize: FontSize.md,
-    color: Colors.t3,
-    paddingVertical: 4,
-  },
-
-  // ── Permission ────────────────────────────────────────
-  permHeader: {
-    paddingBottom: 20,
-    paddingHorizontal: 24,
-  },
-  permBody: {
-    paddingHorizontal: 24,
-    paddingTop: 16,
-  },
-  permItem: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 12,
-    padding: 14,
-    backgroundColor: Colors.glass,
-    borderWidth: 1,
-    borderColor: Colors.glassBd,
-    borderRadius: Radius.md,
-  },
-  permItemIcon: {
-    fontSize: 22,
-    width: 32,
-    textAlign: "center",
-  },
-  permItemTitle: {
-    fontSize: FontSize.md,
-    fontWeight: "600",
-    color: Colors.t1,
-  },
-  permItemDesc: {
-    fontSize: FontSize.sm,
-    color: Colors.t2,
-    marginTop: 2,
-  },
-  permCheck: {
-    width: 22,
-    height: 22,
-    borderRadius: 11,
-    backgroundColor: Colors.green,
-    alignItems: "center",
-    justifyContent: "center",
-    flexShrink: 0,
-  },
-  warningBanner: {
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    backgroundColor: "rgba(255,193,7,0.1)",
-    borderRadius: Radius.md,
-    borderWidth: 1,
-    borderColor: "rgba(255,193,7,0.3)",
-    marginBottom: 20,
-  },
-  warningText: {
-    fontSize: FontSize.sm,
-    color: "rgba(255,193,7,0.9)",
+  termsAccent: {
+    color: "rgba(255,255,255,0.34)",
   },
 });

@@ -34,7 +34,7 @@ export default function LibraryScreen() {
   });
 
   function openPlaylist(id: string) {
-    router.push(`/result/${id}`);
+    router.push(`/result/${encodeURIComponent(id)}` as any);
   }
 
   return (

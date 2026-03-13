@@ -20,7 +20,7 @@ import {
   View,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import Waveform from "../../src/components/ai/Waveform";
+import Waveform from "../../src/components/ai/waveform";
 import { PrimaryButton } from "../../src/components/common/Button";
 import GlassCard from "../../src/components/common/GlassCard";
 import LogoIcon from "../../src/components/common/LogoIcon";
@@ -139,7 +139,7 @@ export default function HomeScreen() {
   }
 
   function saveToSpotify() {
-    router.push("/result/gen_1");
+    router.push("/result/gen_1" as any);
   }
 
   return (
@@ -290,7 +290,7 @@ function HomeInputView({
           </View>
         </View>
         {/* 아바타 */}
-        <TouchableOpacity onPress={() => router.push("/(tabs)/profile")}>
+        <TouchableOpacity onPress={() => router.push("/(tabs)/profile" as any)}>
           <LogoIcon size={38} circular animated={false} />
         </TouchableOpacity>
       </View>
