@@ -19,10 +19,12 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import Svg, { Circle, Path } from "react-native-svg";
 import {
+  bootstrapSpotifyData,
   getSpotifyUser,
   refreshSpotifyAccessToken,
 } from "../../src/api/spotify.service";
 import { useAppStore } from "../../src/store/useAppStore";
+import { SpotifyBootstrapData, SpotifyUser } from "../../src/types";
 
 const { width: W } = Dimensions.get("window");
 
@@ -38,7 +40,7 @@ const C = {
   cardBg2: "rgba(255,255,255,0.03)",
 };
 
-type Stage = 0 | 1 | 2;
+type Stage = 0 | 1 | 2 | 3;
 
 export default function SpotifyLinkingScreen() {
   const insets = useSafeAreaInsets();
@@ -57,9 +59,12 @@ export default function SpotifyLinkingScreen() {
   }, [params.ms]);
 
   const [stage, setStage] = useState<Stage>(0);
+  const [profile, setProfile] = useState<SpotifyUser | null>(null);
+  const [dataSummary, setDataSummary] = useState<SpotifyBootstrapData | null>(null);
   const tokens = useAppStore(s => s.spotifyTokens);
   const setTokens = useAppStore(s => s.setTokens);
   const setSpotifyUser = useAppStore(s => s.setSpotifyUser);
+  const setSpotifyBootstrap = useAppStore(s => s.setSpotifyBootstrap);
 
   // Dots pulse
   const dotT = useRef(new Animated.Value(0)).current;
@@ -79,15 +84,17 @@ export default function SpotifyLinkingScreen() {
 
   useEffect(() => {
     if (mode !== "bootstrap") {
-      const t1 = setTimeout(() => setStage(1), Math.round(totalMs * 0.28));
-      const t2 = setTimeout(() => setStage(2), Math.round(totalMs * 0.62));
-      const t3 = setTimeout(() => {
+      const t1 = setTimeout(() => setStage(1), Math.round(totalMs * 0.22));
+      const t2 = setTimeout(() => setStage(2), Math.round(totalMs * 0.48));
+      const t3 = setTimeout(() => setStage(3), Math.round(totalMs * 0.74));
+      const t4 = setTimeout(() => {
         router.replace(nextPath as any);
       }, totalMs);
       return () => {
         clearTimeout(t1);
         clearTimeout(t2);
         clearTimeout(t3);
+        clearTimeout(t4);
       };
     }
 
@@ -119,10 +126,20 @@ export default function SpotifyLinkingScreen() {
 
         const me = await getSpotifyUser(accessToken);
         if (cancelled) return;
-        if (me) setSpotifyUser(me);
+        if (me) {
+          setSpotifyUser(me);
+          setProfile(me);
+        }
 
-        // Stage 2: permission page / data ready
+        // Stage 2: collect Spotify library bootstrap data
         setStage(2);
+        const bootstrap = await bootstrapSpotifyData(accessToken);
+        if (cancelled) return;
+        setSpotifyBootstrap(bootstrap);
+        setDataSummary(bootstrap);
+
+        // Stage 3: finalize
+        setStage(3);
 
         const minShow = 1500;
         const elapsed = Date.now() - startedAt;
@@ -140,7 +157,17 @@ export default function SpotifyLinkingScreen() {
     return () => {
       cancelled = true;
     };
-  }, [mode, nextPath, totalMs, setSpotifyUser, setTokens, tokens?.accessToken, tokens?.expiresAt, tokens?.refreshToken]);
+  }, [
+    mode,
+    nextPath,
+    totalMs,
+    setSpotifyBootstrap,
+    setSpotifyUser,
+    setTokens,
+    tokens?.accessToken,
+    tokens?.expiresAt,
+    tokens?.refreshToken,
+  ]);
 
   return (
     <View style={[s.root, { paddingTop: insets.top, paddingBottom: insets.bottom }]}>
@@ -208,24 +235,49 @@ export default function SpotifyLinkingScreen() {
           <Text style={s.title}>
             <Text style={{ fontWeight: "900" }}>Spotify</Text> 계정 연결 중
           </Text>
-          <Text style={s.sub}>보안 채널을 통해 인증 중입니다...</Text>
+          <Text style={s.sub}>로그인 정보와 음악 데이터를 안전하게 동기화하고 있어요</Text>
+        </View>
+
+        <View style={s.profileCard}>
+          <LinearGradient
+            colors={[C.cardBg1, C.cardBg2]}
+            style={[StyleSheet.absoluteFill, { borderRadius: 16 }]}
+          />
+          <View style={s.profileHeader}>
+            <Text style={s.profileTitle}>연결된 계정</Text>
+            <Text style={s.profileBadge}>
+              {profile?.product === "premium" ? "Premium" : profile ? "Free" : "확인 중"}
+            </Text>
+          </View>
+          <Text style={s.profileName}>{profile?.display_name ?? "Spotify 사용자 확인 중..."}</Text>
+          <Text style={s.profileEmail}>{profile?.email ?? "이메일 확인 중..."}</Text>
+          <View style={s.summaryRow}>
+            <Text style={s.summaryItem}>Top Tracks {dataSummary?.topTracks.length ?? 0}</Text>
+            <Text style={s.summaryItem}>Top Artists {dataSummary?.topArtists.length ?? 0}</Text>
+            <Text style={s.summaryItem}>Playlists {dataSummary?.playlists.length ?? 0}</Text>
+          </View>
         </View>
 
         {/* Steps */}
         <View style={s.steps}>
           <StepCard
-            state="done"
+            state={stage >= 0 ? "done" : "pending"}
             label="보안 HTTPS 채널 연결"
             accent={C.green}
           />
           <StepCard
-            state={stage >= 1 ? "active" : "pending"}
-            label="계정 자격 증명 확인 중..."
+            state={stage > 1 ? "done" : stage === 1 ? "active" : "pending"}
+            label="계정 프로필 확인"
             accent={C.green}
           />
           <StepCard
-            state={stage >= 2 ? "active" : "pending"}
-            label="권한 승인 페이지 로드 대기"
+            state={stage > 2 ? "done" : stage === 2 ? "active" : "pending"}
+            label="Spotify 데이터 동기화 (Top 트랙/아티스트/플레이리스트)"
+            accent={C.green}
+          />
+          <StepCard
+            state={stage === 3 ? "active" : "pending"}
+            label="MoodTune 시작 화면 준비"
             accent={C.green}
             dim
           />
@@ -402,6 +454,32 @@ const s = StyleSheet.create({
     letterSpacing: -0.2,
   },
   steps: { width: "100%", gap: 12, marginTop: 4 },
+  profileCard: {
+    width: "100%",
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: C.cardBd,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    gap: 8,
+    overflow: "hidden",
+  },
+  profileHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
+  profileTitle: { color: C.t2, fontSize: 12, fontWeight: "700" },
+  profileBadge: { color: C.green, fontSize: 12, fontWeight: "800" },
+  profileName: { color: C.t1, fontSize: 18, fontWeight: "800", letterSpacing: -0.2 },
+  profileEmail: { color: C.t2, fontSize: 13.5 },
+  summaryRow: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 2 },
+  summaryItem: {
+    color: "rgba(255,255,255,0.76)",
+    fontSize: 12.5,
+    paddingHorizontal: 8,
+    paddingVertical: 5,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.14)",
+    backgroundColor: "rgba(255,255,255,0.06)",
+  },
   card: {
     width: "100%",
     minHeight: 62,

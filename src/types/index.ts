@@ -62,14 +62,47 @@ export interface SpotifyUser {
   product: 'premium' | 'free';
 }
 
+export interface SpotifyArtistSummary {
+  id: string;
+  name: string;
+  genres: string[];
+  popularity: number;
+}
+
+export interface SpotifyTrackSummary {
+  id: string;
+  name: string;
+  uri: string;
+  preview_url: string | null;
+  artists: Array<{ id: string; name: string }>;
+  album: { id: string; name: string; images: Array<{ url: string }> };
+}
+
+export interface SpotifyPlaylistSummary {
+  id: string;
+  name: string;
+  uri: string;
+  images: Array<{ url: string }>;
+  tracks: { total: number };
+}
+
+export interface SpotifyBootstrapData {
+  topTracks: SpotifyTrackSummary[];
+  topArtists: SpotifyArtistSummary[];
+  playlists: SpotifyPlaylistSummary[];
+  recentlyPlayed: SpotifyTrackSummary[];
+}
+
 // ── Store ─────────────────────────────────────────────────
 export interface UserState {
   spotifyTokens: SpotifyTokens | null;
   spotifyUser: SpotifyUser | null;
+  spotifyBootstrap: SpotifyBootstrapData | null;
   playlists: Playlist[];
   isAuthenticated: boolean;
   setTokens: (tokens: SpotifyTokens) => void;
   setSpotifyUser: (user: SpotifyUser) => void;
+  setSpotifyBootstrap: (data: SpotifyBootstrapData) => void;
   addPlaylist: (pl: Playlist) => void;
   logout: () => void;
 }

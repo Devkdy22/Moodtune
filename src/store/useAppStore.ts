@@ -5,18 +5,26 @@
 import { create } from 'zustand';
 import { persist, createJSONStorage } from 'zustand/middleware';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { SpotifyTokens, SpotifyUser, Playlist, Track } from '../types';
+import {
+  SpotifyBootstrapData,
+  SpotifyTokens,
+  SpotifyUser,
+  Playlist,
+  Track,
+} from '../types';
 import { MOCK_PLAYLISTS, MOCK_USER } from '../constants/mockData';
 
 // ── User Store ────────────────────────────────────────────
 interface UserSlice {
   spotifyTokens:   SpotifyTokens | null;
   spotifyUser:     SpotifyUser | null;
+  spotifyBootstrap: SpotifyBootstrapData | null;
   playlists:       Playlist[];
   isAuthenticated: boolean;
 
   setTokens:       (tokens: SpotifyTokens) => void;
   setSpotifyUser:  (user: SpotifyUser) => void;
+  setSpotifyBootstrap: (data: SpotifyBootstrapData) => void;
   addPlaylist:     (pl: Playlist) => void;
   removePlaylist:  (id: string) => void;
   toggleLike:      (id: string) => void;
@@ -45,6 +53,7 @@ export const useAppStore = create<AppStore>()(
       // ── User State ──────────────────────────────────────
       spotifyTokens:   null,
       spotifyUser:     null,
+      spotifyBootstrap: null,
       // 개발 중 mock 데이터 사용; API 연동 후 [] 로 변경
       playlists:       MOCK_PLAYLISTS,
       isAuthenticated: false,
@@ -52,6 +61,7 @@ export const useAppStore = create<AppStore>()(
       setTokens: (tokens) => set({ spotifyTokens: tokens, isAuthenticated: true }),
 
       setSpotifyUser: (user) => set({ spotifyUser: user }),
+      setSpotifyBootstrap: (data) => set({ spotifyBootstrap: data }),
 
       addPlaylist: (pl) =>
         set((s) => ({ playlists: [pl, ...s.playlists] })),
@@ -70,6 +80,7 @@ export const useAppStore = create<AppStore>()(
         set({
           spotifyTokens:   null,
           spotifyUser:     null,
+          spotifyBootstrap: null,
           isAuthenticated: false,
         }),
 
@@ -93,6 +104,7 @@ export const useAppStore = create<AppStore>()(
       partialize: (state) => ({
         spotifyTokens:   state.spotifyTokens,
         spotifyUser:     state.spotifyUser,
+        spotifyBootstrap: state.spotifyBootstrap,
         isAuthenticated: state.isAuthenticated,
         playlists:       state.playlists,
       }),
