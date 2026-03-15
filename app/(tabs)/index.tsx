@@ -31,7 +31,6 @@ import { Colors } from "../../src/constants/colors";
 import { FontSize, Radius } from "../../src/constants/layout";
 import {
   MOCK_TRACKS,
-  MOCK_USER,
   MOOD_PILLS,
 } from "../../src/constants/mockData";
 import { useAppStore } from "../../src/store/useAppStore";
@@ -52,16 +51,46 @@ type Phase = "syncing" | "home" | "loading" | "preview";
 
 export default function HomeScreen() {
   const insets = useSafeAreaInsets();
+  const spotifyUser = useAppStore(s => s.spotifyUser);
+  const spotifyBootstrap = useAppStore(s => s.spotifyBootstrap);
   const params = useLocalSearchParams<{ skipSync?: string }>();
   const skipSync = params.skipSync === "1" || params.skipSync === "true";
   const [phase, setPhase] = useState<Phase>(skipSync ? "home" : "syncing");
   const [moodText, setMoodText] = useState("");
   const [activeToggles, setActiveToggles] = useState<Set<string>>(new Set());
-  const [tracks, setTracks] = useState(MOCK_TRACKS);
+  const [tracks, setTracks] = useState<Track[]>(MOCK_TRACKS);
   const [selectedTrack, setSelectedTrack] = useState<Track | null>(null);
   const [showModal, setShowModal] = useState(false);
   const [loadingStep, setLoadingStep] = useState(0);
   const fadeAnim = useRef(new Animated.Value(1)).current;
+  const userFirstName =
+    spotifyUser?.display_name?.trim().split(/\s+/)[0] ||
+    spotifyUser?.id ||
+    "사용자";
+
+  useEffect(() => {
+    const topTracks = spotifyBootstrap?.topTracks ?? [];
+    if (!topTracks.length) return;
+    const mapped: Track[] = topTracks
+      .filter(t => t.id && t.name)
+      .map((t, i) => ({
+        id: t.id,
+        emoji: ["🎧", "🎵", "🎶", "🔥", "✨"][i % 5],
+        name: t.name,
+        artist: t.artists.map(a => a.name).filter(Boolean).join(", ") || "Unknown Artist",
+        duration: "3:00",
+        gradientStart: ["#1a2535", "#22323f", "#2a2138", "#163026", "#2f2420"][i % 5],
+        gradientEnd: ["#0e1822", "#162730", "#171728", "#0b1d17", "#1f1612"][i % 5],
+        album: t.album?.name || "Spotify",
+        year: new Date().getFullYear(),
+        bpm: 110,
+        genre: [],
+        liked: false,
+        spotifyUri: t.uri,
+        previewUrl: t.preview_url ?? undefined,
+      }));
+    if (mapped.length) setTracks(mapped);
+  }, [spotifyBootstrap?.topTracks]);
 
   // s2 Syncing → s3 Home 자동 전환
   useEffect(() => {
@@ -148,10 +177,11 @@ export default function HomeScreen() {
     <ScreenBackground>
       <StatusBar barStyle="light-content" />
       <Animated.View style={[{ flex: 1 }, { opacity: fadeAnim }]}>
-        {phase === "syncing" && <SyncingView insets={insets} />}
+        {phase === "syncing" && <SyncingView insets={insets} userFirstName={userFirstName} />}
         {phase === "home" && (
           <HomeInputView
             insets={insets}
+            userFirstName={userFirstName}
             moodText={moodText}
             setMoodText={setMoodText}
             activeToggles={activeToggles}
@@ -194,7 +224,7 @@ const SYNC_STEPS = [
   { label: "플레이리스트 준비", done: false },
 ];
 
-function SyncingView({ insets }: any) {
+function SyncingView({ insets, userFirstName }: any) {
   const progressAnim = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
@@ -214,11 +244,11 @@ function SyncingView({ insets }: any) {
     <View style={[styles.centered, { paddingTop: insets.top }]}>
       {/* 헤더 로고 */}
       <View style={styles.syncHeader}>
-        <LogoIcon size={56} radius={16} animated />
-        <View>
-          <Text style={styles.syncTitle}>안녕하세요, {MOCK_USER.name}님!</Text>
+          <LogoIcon size={56} radius={16} animated />
+          <View>
+          <Text style={styles.syncTitle}>안녕하세요, {userFirstName}님!</Text>
           <Text style={styles.syncSub}>데이터를 동기화하고 있어요</Text>
-        </View>
+          </View>
       </View>
 
       {/* 웨이브폼 */}
@@ -271,6 +301,7 @@ function SyncingView({ insets }: any) {
 // ════════════════════════════════════════════════════════
 function HomeInputView({
   insets,
+  userFirstName,
   moodText,
   setMoodText,
   activeToggles,
@@ -308,7 +339,7 @@ function HomeInputView({
       >
         {/* 인사말 */}
         <Text style={styles.greetTitle}>
-          안녕하세요 {MOCK_USER.name.split(" ")[0]}님 👋
+          안녕하세요 {userFirstName}님 👋
         </Text>
         <Text style={styles.greetSub}>오늘 어떤 기분인가요?</Text>
 

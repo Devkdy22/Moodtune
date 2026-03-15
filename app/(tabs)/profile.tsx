@@ -22,32 +22,9 @@ import ScreenBackground from "../../src/components/common/ScreenBackground";
 import PlaylistCard from "../../src/components/music/PlaylistCard";
 import { Colors } from "../../src/constants/colors";
 import { FontSize } from "../../src/constants/layout";
-import { MOCK_USER } from "../../src/constants/mockData";
 import { useAppStore } from "../../src/store/useAppStore";
 
 const PROFILE_TABS = ["내 정보", "내 플리", "설정"];
-
-const STATS = [
-  { label: "플레이리스트", value: MOCK_USER.stats.playlists },
-  { label: "총 곡 수", value: MOCK_USER.stats.tracks },
-  { label: "재생 시간", value: `${MOCK_USER.stats.hours}h` },
-  { label: "즐겨찾기", value: MOCK_USER.stats.favorites },
-];
-
-const ACCOUNT_ROWS = [
-  { icon: "✏️", label: "이름 변경", sub: MOCK_USER.name },
-  { icon: "📧", label: "이메일", sub: MOCK_USER.email },
-  { icon: "📅", label: "생년월일", sub: "1995년 3월 15일" },
-  { icon: "🌏", label: "지역", sub: "대한민국" },
-  { icon: "🔐", label: "비밀번호 변경", sub: "마지막 변경: 30일 전" },
-];
-
-const AI_ROWS = [
-  { icon: "🎯", label: "AI 추천 정확도", sub: "현재: 높음" },
-  { icon: "🎵", label: "선호 장르", sub: "Jazz, Lo-Fi, Indie" },
-  { icon: "🚫", label: "제외 장르", sub: "없음" },
-  { icon: "⏱", label: "기본 플레이리스트 길이", sub: "30~60분" },
-];
 
 const SETTING_ROWS = [
   { icon: "🔔", label: "알림", toggle: true },
@@ -59,6 +36,8 @@ const SETTING_ROWS = [
 export default function ProfileScreen() {
   const insets = useSafeAreaInsets();
   const playlists = useAppStore(s => s.playlists);
+  const spotifyUser = useAppStore(s => s.spotifyUser);
+  const spotifyBootstrap = useAppStore(s => s.spotifyBootstrap);
   const toggleLike = useAppStore(s => s.toggleLike);
   const logout = useAppStore(s => s.logout);
   const [activeTab, setActiveTab] = useState("내 정보");
@@ -66,6 +45,33 @@ export default function ProfileScreen() {
   const [dark, setDark] = useState(true);
   const [dataSave, setData] = useState(false);
   const [analytics, setAna] = useState(false);
+  const displayName = spotifyUser?.display_name || "MoodTune 사용자";
+  const email = spotifyUser?.email || "spotify@email.com";
+  const topGenre =
+    spotifyBootstrap?.topArtists
+      ?.flatMap(a => a.genres ?? [])
+      .filter(Boolean)[0] || "분석 중";
+  const likedCount = playlists.filter(p => p.liked).length;
+  const trackCount = spotifyBootstrap?.topTracks?.length ?? 0;
+  const stats = [
+    { label: "플레이리스트", value: playlists.length },
+    { label: "Top 트랙", value: trackCount },
+    { label: "Top 아티스트", value: spotifyBootstrap?.topArtists?.length ?? 0 },
+    { label: "즐겨찾기", value: likedCount },
+  ];
+  const accountRows = [
+    { icon: "✏️", label: "이름", sub: displayName },
+    { icon: "📧", label: "이메일", sub: email },
+    { icon: "💳", label: "Spotify 플랜", sub: spotifyUser?.product === "premium" ? "Premium" : "Free" },
+    { icon: "🆔", label: "Spotify ID", sub: spotifyUser?.id ?? "-" },
+    { icon: "🔐", label: "연결 상태", sub: "OAuth 2.0 연결 완료" },
+  ];
+  const aiRows = [
+    { icon: "🎯", label: "AI 추천 정확도", sub: trackCount >= 10 ? "현재: 높음" : "데이터 수집 중" },
+    { icon: "🎵", label: "선호 장르", sub: topGenre },
+    { icon: "📚", label: "분석된 플레이리스트", sub: `${spotifyBootstrap?.playlists?.length ?? 0}개` },
+    { icon: "🕘", label: "최근 재생 분석", sub: `${spotifyBootstrap?.recentlyPlayed?.length ?? 0}곡` },
+  ];
 
   const toggleMap: Record<string, [boolean, (v: boolean) => void]> = {
     알림: [notif, setNotif],
@@ -84,8 +90,8 @@ export default function ProfileScreen() {
           <View style={styles.avatarSection}>
             <LogoIcon size={76} circular animated />
             <View>
-              <Text style={styles.userName}>{MOCK_USER.name}</Text>
-              <Text style={styles.userEmail}>{MOCK_USER.email}</Text>
+              <Text style={styles.userName}>{displayName}</Text>
+              <Text style={styles.userEmail}>{email}</Text>
               {/* Spotify 연결 상태 */}
               <View style={styles.spConnected}>
                 <View style={styles.spDot} />
@@ -96,12 +102,12 @@ export default function ProfileScreen() {
 
           {/* 통계 */}
           <GlassCard style={styles.statsGrid} padding={0}>
-            {STATS.map((s, i) => (
+            {stats.map((s, i) => (
               <View
                 key={s.label}
                 style={[
                   styles.statCell,
-                  i < STATS.length - 1 && styles.statCellBorder,
+                  i < stats.length - 1 && styles.statCellBorder,
                 ]}
               >
                 <Text style={styles.statValue}>{s.value}</Text>
@@ -143,7 +149,7 @@ export default function ProfileScreen() {
           showsVerticalScrollIndicator={false}
         >
           {activeTab === "내 정보" && (
-            <MyInfoTab accountRows={ACCOUNT_ROWS} aiRows={AI_ROWS} />
+            <MyInfoTab accountRows={accountRows} aiRows={aiRows} />
           )}
           {activeTab === "내 플리" && (
             <MyPlaylistsTab

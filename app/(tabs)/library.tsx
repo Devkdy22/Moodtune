@@ -25,8 +25,10 @@ const FILTER_TABS = ["전체", "최근", "좋아요"];
 export default function LibraryScreen() {
   const insets = useSafeAreaInsets();
   const playlists = useAppStore(s => s.playlists);
+  const spotifyUser = useAppStore(s => s.spotifyUser);
   const toggleLike = useAppStore(s => s.toggleLike);
   const [activeFilter, setActiveFilter] = useState("전체");
+  const userName = spotifyUser?.display_name || "사용자";
 
   const filtered = playlists.filter(p => {
     if (activeFilter === "좋아요") return p.liked;
@@ -35,6 +37,10 @@ export default function LibraryScreen() {
 
   function openPlaylist(id: string) {
     router.push(`/result/${encodeURIComponent(id)}` as any);
+  }
+
+  function goCreatePlaylist() {
+    router.replace("/(tabs)?skipSync=1" as any);
   }
 
   return (
@@ -46,14 +52,14 @@ export default function LibraryScreen() {
           <View>
             <Text style={styles.headerTitle}>내 라이브러리</Text>
             <Text style={styles.headerSub}>
-              {playlists.length}개의 플레이리스트
+              {userName}님을 위한 플레이리스트 {playlists.length}개
             </Text>
           </View>
           <TouchableOpacity
             style={styles.createBtn}
-            onPress={() => router.replace("/(tabs)")}
+            onPress={goCreatePlaylist}
           >
-            <Text style={styles.createBtnText}>+ 새 생성</Text>
+            <Text style={styles.createBtnText}>+ 생성하러 가기</Text>
           </TouchableOpacity>
         </View>
 
@@ -85,11 +91,13 @@ export default function LibraryScreen() {
         {filtered.length === 0 ? (
           <View style={styles.emptyState}>
             <Text style={styles.emptyIcon}>🎵</Text>
-            <Text style={styles.emptyTitle}>아직 플레이리스트가 없어요</Text>
-            <Text style={styles.emptySub}>AI에게 오늘의 기분을 알려주세요</Text>
+            <Text style={styles.emptyTitle}>저장된 라이브러리 목록이 없어요</Text>
+            <Text style={styles.emptySub}>
+              {userName}님을 위한 플레이리스트를 생성해보세요
+            </Text>
             <PrimaryButton
-              label="플레이리스트 만들기"
-              onPress={() => router.replace("/(tabs)")}
+              label="당신을 위한 플레이리스트 생성하기"
+              onPress={goCreatePlaylist}
               style={{ marginTop: 20 }}
             />
           </View>
