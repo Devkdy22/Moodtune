@@ -96,6 +96,7 @@ const C = {
 
 const HEADER_H = 56;
 const USE_NATIVE_DRIVER = Platform.OS !== "web";
+const DEFAULT_WEB_BASE_URL = "https://moodtune-web.vercel.app";
 
 /* ═══════════════════════════════════════════════════════════════
    MAIN COMPONENT
@@ -106,7 +107,13 @@ export default function SpotifyLoginScreen() {
   const [oauthLoading, setOauthLoading] = useState(false);
   const [oauthError, setOauthError] = useState<string | null>(null);
 
-  const clientId = process.env.EXPO_PUBLIC_SPOTIFY_CLIENT_ID ?? "";
+  const clientId = (process.env.EXPO_PUBLIC_SPOTIFY_CLIENT_ID ?? "").trim();
+  const devWebBaseUrl = (process.env.EXPO_PUBLIC_WEB_BASE_URL_DEV ?? "").trim();
+  const prodWebBaseUrl = (process.env.EXPO_PUBLIC_WEB_BASE_URL_PROD ?? "").trim();
+  const devWebRedirectUri = (process.env.EXPO_PUBLIC_SPOTIFY_WEB_REDIRECT_URI_DEV ?? "").trim();
+  const prodWebRedirectUri = (process.env.EXPO_PUBLIC_SPOTIFY_WEB_REDIRECT_URI_PROD ?? "").trim();
+  const devProxyReturnUrl = (process.env.EXPO_PUBLIC_PROXY_RETURN_URL_DEV ?? "").trim();
+  const prodProxyReturnUrl = (process.env.EXPO_PUBLIC_PROXY_RETURN_URL_PROD ?? "").trim();
   const webOrigin = useMemo(() => {
     if (Platform.OS !== "web") return null;
     if (typeof window === "undefined") return null;
@@ -125,25 +132,44 @@ export default function SpotifyLoginScreen() {
     return Constants.executionEnvironment === ExecutionEnvironment.StoreClient;
   }, []);
 
-  const projectFullName = Constants.expoConfig?.originalFullName;
+  const projectFullName =
+    Constants.expoConfig?.originalFullName ||
+    (Constants.expoConfig?.owner && Constants.expoConfig?.slug
+      ? `@${Constants.expoConfig.owner}/${Constants.expoConfig.slug}`
+      : null);
   const proxyRedirectUri = useMemo(() => {
     if (!projectFullName) return null;
     return `https://auth.expo.io/${projectFullName}`;
   }, [projectFullName]);
 
   const nativeRedirectUri = useMemo(
-    () =>
-      Platform.OS === "web"
-        ? `${webOrigin ?? "http://localhost:8081"}/auth/spotify-login`
-        : AuthSession.makeRedirectUri({
-            scheme: "moodtune",
-            path: "auth/spotify-login",
-          }),
-    [webOrigin],
+    () => {
+      if (Platform.OS !== "web") {
+        return AuthSession.makeRedirectUri({
+          scheme: "moodtune",
+          path: "auth/spotify-login",
+        });
+      }
+
+      const configuredRedirectUri = __DEV__ ? devWebRedirectUri : prodWebRedirectUri;
+      if (configuredRedirectUri) return configuredRedirectUri;
+
+      const baseUrl = (
+        (__DEV__ ? devWebBaseUrl : prodWebBaseUrl) ||
+        webOrigin ||
+        DEFAULT_WEB_BASE_URL
+      ).replace(/\/+$/, "");
+      return `${baseUrl}/auth/spotify-login`;
+    },
+    [devWebBaseUrl, devWebRedirectUri, prodWebBaseUrl, prodWebRedirectUri, webOrigin],
   );
 
   const redirectUri = shouldUseProxy && proxyRedirectUri ? proxyRedirectUri : nativeRedirectUri;
-  const proxyReturnUrl = useMemo(() => AuthSession.getDefaultReturnUrl("auth/spotify-login"), []);
+  const proxyReturnUrl = useMemo(() => {
+    const envReturnUrl = __DEV__ ? devProxyReturnUrl : prodProxyReturnUrl;
+    if (envReturnUrl) return envReturnUrl;
+    return AuthSession.getDefaultReturnUrl("auth/spotify-login");
+  }, [devProxyReturnUrl, prodProxyReturnUrl]);
 
   const [request, , promptAsync] = AuthSession.useAuthRequest(
     {
@@ -165,12 +191,41 @@ export default function SpotifyLoginScreen() {
     console.log("[spotify-login] proxyReturnUrl:", proxyReturnUrl);
     console.log("[spotify-login] webOrigin:", webOrigin);
     console.log("[spotify-login] isInsecureWebContext:", isInsecureWebContext);
+    console.log("[spotify-login] devWebBaseUrl:", devWebBaseUrl);
+    console.log("[spotify-login] prodWebBaseUrl:", prodWebBaseUrl);
+    console.log("[spotify-login] devWebRedirectUri:", devWebRedirectUri);
+    console.log("[spotify-login] prodWebRedirectUri:", prodWebRedirectUri);
+    console.log("[spotify-login] devProxyReturnUrl:", devProxyReturnUrl);
+    console.log("[spotify-login] prodProxyReturnUrl:", prodProxyReturnUrl);
+    if (request?.url) {
+      try {
+        const u = new URL(request.url);
+        console.log("[spotify-login] authUrl:", request.url);
+        console.log(
+          "[spotify-login] authUrl.client_id:",
+          JSON.stringify(u.searchParams.get("client_id")),
+        );
+        console.log(
+          "[spotify-login] authUrl.redirect_uri:",
+          JSON.stringify(u.searchParams.get("redirect_uri")),
+        );
+      } catch {
+        console.log("[spotify-login] authUrl: (parse failed)");
+      }
+    }
   }, [
+    devProxyReturnUrl,
+    devWebBaseUrl,
+    devWebRedirectUri,
     isInsecureWebContext,
     nativeRedirectUri,
+    prodProxyReturnUrl,
+    prodWebBaseUrl,
+    prodWebRedirectUri,
     proxyRedirectUri,
     proxyReturnUrl,
     redirectUri,
+    request?.url,
     shouldUseProxy,
     webOrigin,
   ]);
@@ -557,7 +612,6 @@ export default function SpotifyLoginScreen() {
       />
       {/* 초록빛 오버레이(은은한 무드) */}
       <LinearGradient
-        pointerEvents="none"
         colors={[
           "rgba(61,220,132,0.16)",
           "rgba(61,220,132,0.06)",
@@ -565,10 +619,9 @@ export default function SpotifyLoginScreen() {
         ]}
         start={{ x: 0.05, y: 0.05 }}
         end={{ x: 0.85, y: 0.95 }}
-        style={[StyleSheet.absoluteFill, { opacity: 0.75 }]}
+        style={[StyleSheet.absoluteFill, { opacity: 0.75, pointerEvents: "none" }]}
       />
       <Animated.View
-        pointerEvents="none"
         style={[
           s.bgGlowTop,
           {
@@ -597,10 +650,10 @@ export default function SpotifyLoginScreen() {
               },
             ],
           },
+          { pointerEvents: "none" },
         ]}
       />
       <Animated.View
-        pointerEvents="none"
         style={[
           s.bgGlowBottom,
           {
@@ -629,6 +682,7 @@ export default function SpotifyLoginScreen() {
               },
             ],
           },
+          { pointerEvents: "none" },
         ]}
       />
 
@@ -699,8 +753,10 @@ export default function SpotifyLoginScreen() {
               <View style={s.spCircle}>
                 <LinearGradient
                   colors={["#1a1a1a", "#111111", "#0d0d0d"]}
-                  pointerEvents="none"
-                  style={[StyleSheet.absoluteFill, { zIndex: 0 }]}
+                  style={[
+                    StyleSheet.absoluteFill,
+                    { zIndex: 0, pointerEvents: "none" },
+                  ]}
                 />
                 <View style={{ zIndex: 1 }}>
                   <SpotifyMark size={60} />
@@ -725,23 +781,27 @@ export default function SpotifyLoginScreen() {
             <View style={s.mtCircleWrap}>
               {/* 로고 뒤 번짐(블룸) */}
               <Animated.View
-                pointerEvents="none"
-                style={[s.mtBloom, { opacity: mtGlowOp }]}
+                style={[s.mtBloom, { opacity: mtGlowOp, pointerEvents: "none" }]}
               />
               {/* 네온 glow 링 */}
               <Animated.View
-                pointerEvents="none"
                 style={[
                   s.mtGlowRing,
-                  { shadowRadius: mtGlowR, shadowOpacity: mtGlowOp },
+                  {
+                    shadowRadius: mtGlowR,
+                    shadowOpacity: mtGlowOp,
+                    pointerEvents: "none",
+                  },
                 ]}
               />
               {/* MoodTune 원 본체 */}
               <View style={s.mtCircle}>
                 <LinearGradient
                   colors={["#142418", "#0a1c10", "#060e08"]}
-                  pointerEvents="none"
-                  style={[StyleSheet.absoluteFill, { zIndex: 0 }]}
+                  style={[
+                    StyleSheet.absoluteFill,
+                    { zIndex: 0, pointerEvents: "none" },
+                  ]}
                 />
                 {/* Moodtune 로고 */}
                 {/* 실제 앱: <Image source={require('../../assets/logo.png')} /> */}
@@ -800,16 +860,21 @@ export default function SpotifyLoginScreen() {
               >
                 {/* shimmer */}
                 <Animated.View
-                  pointerEvents="none"
                   style={[
                     s.shimmer,
-                    { transform: [{ translateX: shimX }, { skewX: "-22deg" }] },
+                    {
+                      transform: [{ translateX: shimX }, { skewX: "-22deg" }],
+                      pointerEvents: "none",
+                    },
                   ]}
                 />
                 {pressed ? (
                   <View
-                    pointerEvents="none"
-                    style={[StyleSheet.absoluteFill, s.pressOverlayDark]}
+                    style={[
+                      StyleSheet.absoluteFill,
+                      s.pressOverlayDark,
+                      { pointerEvents: "none" },
+                    ]}
                   />
                 ) : null}
                 <View style={s.mainBtnIconWrap}>
@@ -852,8 +917,11 @@ export default function SpotifyLoginScreen() {
                 />
                 {pressed ? (
                   <View
-                    pointerEvents="none"
-                    style={[StyleSheet.absoluteFill, s.pressOverlayLight]}
+                    style={[
+                      StyleSheet.absoluteFill,
+                      s.pressOverlayLight,
+                      { pointerEvents: "none" },
+                    ]}
                   />
                 ) : null}
                 <Text style={s.subBtnIcon}>🌐</Text>
@@ -879,8 +947,11 @@ export default function SpotifyLoginScreen() {
                 />
                 {pressed ? (
                   <View
-                    pointerEvents="none"
-                    style={[StyleSheet.absoluteFill, s.pressOverlayLight]}
+                    style={[
+                      StyleSheet.absoluteFill,
+                      s.pressOverlayLight,
+                      { pointerEvents: "none" },
+                    ]}
                   />
                 ) : null}
                 <View style={s.subBtnSpIcon}>

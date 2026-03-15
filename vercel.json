@@ -1,0 +1,13 @@
+{
+  "buildCommand": "npx expo export --platform web",
+  "outputDirectory": "dist",
+  "cleanUrls": true,
+  "trailingSlash": false,
+  "routes": [
+    { "handle": "filesystem" },
+    { "src": "/", "dest": "/index.html" },
+    { "src": "/auth/spotify-login", "dest": "/auth/spotify-login.html" },
+    { "src": "/(.*)", "dest": "/$1.html" },
+    { "src": "/(.*)", "dest": "/index.html" }
+  ]
+}

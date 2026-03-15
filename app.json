@@ -1,6 +1,7 @@
 {
   "expo": {
     "name": "Moodtune",
+    "owner": "devkdy",
     "slug": "Moodtune",
     "version": "1.0.0",
     "orientation": "portrait",
