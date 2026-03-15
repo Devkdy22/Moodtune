@@ -122,8 +122,14 @@ export default function SpotifyPermissionsScreen() {
   };
 
   return (
-    <View style={[s.root, { paddingTop: insets.top, paddingBottom: insets.bottom }]}>
-      <StatusBar barStyle="light-content" translucent backgroundColor="transparent" />
+    <View
+      style={[s.root, { paddingTop: insets.top, paddingBottom: insets.bottom }]}
+    >
+      <StatusBar
+        barStyle="light-content"
+        translucent
+        backgroundColor="transparent"
+      />
 
       {/* Background */}
       <LinearGradient
@@ -133,7 +139,11 @@ export default function SpotifyPermissionsScreen() {
       />
       <LinearGradient
         pointerEvents="none"
-        colors={["rgba(61,220,132,0.14)", "rgba(61,220,132,0.05)", "rgba(0,0,0,0)"]}
+        colors={[
+          "rgba(61,220,132,0.14)",
+          "rgba(61,220,132,0.05)",
+          "rgba(0,0,0,0)",
+        ]}
         start={{ x: 0.05, y: 0.05 }}
         end={{ x: 0.85, y: 0.95 }}
         style={[StyleSheet.absoluteFill, { opacity: 0.72 }]}
@@ -180,7 +190,7 @@ export default function SpotifyPermissionsScreen() {
                 <Image
                   source={require("../../assets/images/moodtune-logo.png")}
                   resizeMode="contain"
-                  style={{ width: 44, height: 44 }}
+                  style={{ width: 56, height: 56 }}
                 />
               </View>
               <View style={{ gap: 2 }}>
@@ -190,7 +200,9 @@ export default function SpotifyPermissionsScreen() {
             </View>
 
             <View style={s.appRight}>
-              <Text style={[s.userName, { color: C.green }]}>{displayName}</Text>
+              <Text style={[s.userName, { color: C.green }]}>
+                {displayName}
+              </Text>
               <Text style={s.userEmail}>{email}</Text>
               <Text style={[s.userBadge, { color: profileAccent }]}>
                 {loadingUser
@@ -254,7 +266,9 @@ export default function SpotifyPermissionsScreen() {
               onPress={onStart}
               style={({ pressed }) => [
                 s.primaryWrap,
-                pressed ? { transform: [{ scale: 0.985 }, { translateY: 1 }] } : null,
+                pressed
+                  ? { transform: [{ scale: 0.985 }, { translateY: 1 }] }
+                  : null,
               ]}
             >
               {({ pressed }) => (
@@ -279,13 +293,17 @@ export default function SpotifyPermissionsScreen() {
               onPress={onCancel}
               style={({ pressed }) => [
                 s.secondary,
-                pressed ? { opacity: 0.75, transform: [{ scale: 0.99 }] } : null,
+                pressed
+                  ? { opacity: 0.75, transform: [{ scale: 0.99 }] }
+                  : null,
               ]}
             >
               <Text style={s.secondaryText}>취소</Text>
             </Pressable>
 
-            <Text style={s.terms}>권한 허용 시 Spotify 이용약관이 적용됩니다</Text>
+            <Text style={s.terms}>
+              권한 허용 시 Spotify 이용약관이 적용됩니다
+            </Text>
           </View>
         </Animated.View>
       </ScrollView>
@@ -320,7 +338,12 @@ const s = StyleSheet.create({
     justifyContent: "center",
     gap: 10,
   },
-  headerTitle: { color: C.t1, fontSize: 18, fontWeight: "800", letterSpacing: -0.2 },
+  headerTitle: {
+    color: C.t1,
+    fontSize: 18,
+    fontWeight: "800",
+    letterSpacing: -0.2,
+  },
   scroll: { paddingHorizontal: 22, paddingBottom: 28 },
   content: { paddingTop: 18, gap: 18 },
 
@@ -375,7 +398,12 @@ const s = StyleSheet.create({
     justifyContent: "center",
     overflow: "hidden",
   },
-  appName: { color: C.t1, fontSize: 20, fontWeight: "900", letterSpacing: -0.3 },
+  appName: {
+    color: C.t1,
+    fontSize: 20,
+    fontWeight: "900",
+    letterSpacing: -0.3,
+  },
   appSub: { color: C.t2, fontSize: 13.5, letterSpacing: -0.1 },
   appRight: { alignItems: "flex-end", gap: 2 },
   userName: { fontSize: 16, fontWeight: "800", letterSpacing: -0.2 },
@@ -383,8 +411,19 @@ const s = StyleSheet.create({
   userBadge: { fontSize: 12, fontWeight: "700" },
 
   titleBlock: { gap: 10, marginTop: 6 },
-  title: { color: C.t1, fontSize: 28, fontWeight: "900", letterSpacing: -0.8, lineHeight: 34 },
-  titleSub: { color: C.t2, fontSize: 14.5, letterSpacing: -0.2, lineHeight: 20 },
+  title: {
+    color: C.t1,
+    fontSize: 28,
+    fontWeight: "900",
+    letterSpacing: -0.8,
+    lineHeight: 34,
+  },
+  titleSub: {
+    color: C.t2,
+    fontSize: 14.5,
+    letterSpacing: -0.2,
+    lineHeight: 20,
+  },
 
   permList: { gap: 12, marginTop: 6 },
   permCard: {
@@ -407,7 +446,12 @@ const s = StyleSheet.create({
     justifyContent: "center",
   },
   permIcon: { fontSize: 18 },
-  permTitle: { color: C.t1, fontSize: 16.5, fontWeight: "800", letterSpacing: -0.2 },
+  permTitle: {
+    color: C.t1,
+    fontSize: 16.5,
+    fontWeight: "800",
+    letterSpacing: -0.2,
+  },
   permSub: { color: C.t2, fontSize: 13.5, letterSpacing: -0.1 },
   checkCircle: {
     width: 26,
@@ -430,12 +474,22 @@ const s = StyleSheet.create({
     overflow: "hidden",
     marginTop: 4,
   },
-  warnText: { color: "rgba(255,208,77,0.75)", fontSize: 13.5, lineHeight: 19, letterSpacing: -0.1 },
+  warnText: {
+    color: "rgba(255,208,77,0.75)",
+    fontSize: 13.5,
+    lineHeight: 19,
+    letterSpacing: -0.1,
+  },
 
   actions: { gap: 12, marginTop: 8, paddingTop: 8 },
   primaryWrap: { width: "100%", borderRadius: 999, overflow: "hidden" },
   primary: { height: 64, alignItems: "center", justifyContent: "center" },
-  primaryText: { color: "#000", fontSize: 18, fontWeight: "900", letterSpacing: -0.4 },
+  primaryText: {
+    color: "#000",
+    fontSize: 18,
+    fontWeight: "900",
+    letterSpacing: -0.4,
+  },
   secondary: {
     width: "100%",
     height: 56,
@@ -446,7 +500,15 @@ const s = StyleSheet.create({
     borderWidth: 1,
     borderColor: "rgba(255,255,255,0.10)",
   },
-  secondaryText: { color: "rgba(255,255,255,0.72)", fontSize: 16, fontWeight: "800" },
-  terms: { textAlign: "center", color: "rgba(255,255,255,0.28)", fontSize: 12.5 },
+  secondaryText: {
+    color: "rgba(255,255,255,0.72)",
+    fontSize: 16,
+    fontWeight: "800",
+  },
+  terms: {
+    textAlign: "center",
+    color: "rgba(255,255,255,0.28)",
+    fontSize: 12.5,
+  },
   pressOverlayDark: { backgroundColor: "rgba(0,0,0,0.10)" },
 });

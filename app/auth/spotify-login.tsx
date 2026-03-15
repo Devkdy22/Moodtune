@@ -28,21 +28,21 @@
 // ═══════════════════════════════════════════════════════════════════════
 
 import * as AuthSession from "expo-auth-session";
-import { LinearGradient } from "expo-linear-gradient";
-import * as WebBrowser from "expo-web-browser";
-import { router } from "expo-router";
 import Constants, { ExecutionEnvironment } from "expo-constants";
+import { LinearGradient } from "expo-linear-gradient";
+import { router } from "expo-router";
+import * as WebBrowser from "expo-web-browser";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
-  Animated,
   Alert,
+  Animated,
   Dimensions,
   Easing,
   Image,
   Linking,
-  Pressable,
   Platform,
+  Pressable,
   ScrollView,
   StatusBar,
   StyleSheet,
@@ -109,11 +109,21 @@ export default function SpotifyLoginScreen() {
 
   const clientId = (process.env.EXPO_PUBLIC_SPOTIFY_CLIENT_ID ?? "").trim();
   const devWebBaseUrl = (process.env.EXPO_PUBLIC_WEB_BASE_URL_DEV ?? "").trim();
-  const prodWebBaseUrl = (process.env.EXPO_PUBLIC_WEB_BASE_URL_PROD ?? "").trim();
-  const devWebRedirectUri = (process.env.EXPO_PUBLIC_SPOTIFY_WEB_REDIRECT_URI_DEV ?? "").trim();
-  const prodWebRedirectUri = (process.env.EXPO_PUBLIC_SPOTIFY_WEB_REDIRECT_URI_PROD ?? "").trim();
-  const devProxyReturnUrl = (process.env.EXPO_PUBLIC_PROXY_RETURN_URL_DEV ?? "").trim();
-  const prodProxyReturnUrl = (process.env.EXPO_PUBLIC_PROXY_RETURN_URL_PROD ?? "").trim();
+  const prodWebBaseUrl = (
+    process.env.EXPO_PUBLIC_WEB_BASE_URL_PROD ?? ""
+  ).trim();
+  const devWebRedirectUri = (
+    process.env.EXPO_PUBLIC_SPOTIFY_WEB_REDIRECT_URI_DEV ?? ""
+  ).trim();
+  const prodWebRedirectUri = (
+    process.env.EXPO_PUBLIC_SPOTIFY_WEB_REDIRECT_URI_PROD ?? ""
+  ).trim();
+  const devProxyReturnUrl = (
+    process.env.EXPO_PUBLIC_PROXY_RETURN_URL_DEV ?? ""
+  ).trim();
+  const prodProxyReturnUrl = (
+    process.env.EXPO_PUBLIC_PROXY_RETURN_URL_PROD ?? ""
+  ).trim();
   const webOrigin = useMemo(() => {
     if (Platform.OS !== "web") return null;
     if (typeof window === "undefined") return null;
@@ -142,29 +152,35 @@ export default function SpotifyLoginScreen() {
     return `https://auth.expo.io/${projectFullName}`;
   }, [projectFullName]);
 
-  const nativeRedirectUri = useMemo(
-    () => {
-      if (Platform.OS !== "web") {
-        return AuthSession.makeRedirectUri({
-          scheme: "moodtune",
-          path: "auth/spotify-login",
-        });
-      }
+  const nativeRedirectUri = useMemo(() => {
+    if (Platform.OS !== "web") {
+      return AuthSession.makeRedirectUri({
+        scheme: "moodtune",
+        path: "auth/spotify-login",
+      });
+    }
 
-      const configuredRedirectUri = __DEV__ ? devWebRedirectUri : prodWebRedirectUri;
-      if (configuredRedirectUri) return configuredRedirectUri;
+    const configuredRedirectUri = __DEV__
+      ? devWebRedirectUri
+      : prodWebRedirectUri;
+    if (configuredRedirectUri) return configuredRedirectUri;
 
-      const baseUrl = (
-        (__DEV__ ? devWebBaseUrl : prodWebBaseUrl) ||
-        webOrigin ||
-        DEFAULT_WEB_BASE_URL
-      ).replace(/\/+$/, "");
-      return `${baseUrl}/auth/spotify-login`;
-    },
-    [devWebBaseUrl, devWebRedirectUri, prodWebBaseUrl, prodWebRedirectUri, webOrigin],
-  );
+    const baseUrl = (
+      (__DEV__ ? devWebBaseUrl : prodWebBaseUrl) ||
+      webOrigin ||
+      DEFAULT_WEB_BASE_URL
+    ).replace(/\/+$/, "");
+    return `${baseUrl}/auth/spotify-login`;
+  }, [
+    devWebBaseUrl,
+    devWebRedirectUri,
+    prodWebBaseUrl,
+    prodWebRedirectUri,
+    webOrigin,
+  ]);
 
-  const redirectUri = shouldUseProxy && proxyRedirectUri ? proxyRedirectUri : nativeRedirectUri;
+  const redirectUri =
+    shouldUseProxy && proxyRedirectUri ? proxyRedirectUri : nativeRedirectUri;
   const proxyReturnUrl = useMemo(() => {
     const envReturnUrl = __DEV__ ? devProxyReturnUrl : prodProxyReturnUrl;
     if (envReturnUrl) return envReturnUrl;
@@ -181,6 +197,7 @@ export default function SpotifyLoginScreen() {
     },
     SPOTIFY_DISCOVERY,
   );
+  const isOAuthReady = Boolean(request);
 
   useEffect(() => {
     if (!__DEV__) return;
@@ -493,7 +510,13 @@ export default function SpotifyLoginScreen() {
       );
       return;
     }
-    if (!request) return;
+    if (!request) {
+      const msg =
+        "OAuth 요청이 아직 준비되지 않았어요. 잠시 후 다시 시도하거나 페이지를 새로고침해 주세요.";
+      setOauthError(msg);
+      Alert.alert("Spotify 로그인 준비 중", msg);
+      return;
+    }
     if (Platform.OS === "web" && isInsecureWebContext) {
       Alert.alert(
         "보안 연결 필요",
@@ -512,7 +535,9 @@ export default function SpotifyLoginScreen() {
           );
         }
         if (!request.url) {
-          throw new Error("OAuth 요청이 아직 준비되지 않았어요. 잠시 후 다시 시도해주세요.");
+          throw new Error(
+            "OAuth 요청이 아직 준비되지 않았어요. 잠시 후 다시 시도해주세요.",
+          );
         }
 
         const startUrl =
@@ -520,12 +545,17 @@ export default function SpotifyLoginScreen() {
           `?authUrl=${encodeURIComponent(request.url)}` +
           `&returnUrl=${encodeURIComponent(proxyReturnUrl)}`;
 
-        const wb = await WebBrowser.openAuthSessionAsync(startUrl, proxyReturnUrl);
+        const wb = await WebBrowser.openAuthSessionAsync(
+          startUrl,
+          proxyReturnUrl,
+        );
         if (wb.type !== "success") return;
 
         const parsed = request.parseReturnUrl(wb.url);
         if (parsed.type !== "success") {
-          throw new Error(parsed.type === "error" ? "OAuth error" : "OAuth canceled");
+          throw new Error(
+            parsed.type === "error" ? "OAuth error" : "OAuth canceled",
+          );
         }
         const code = (parsed as any).params?.code as string | undefined;
         if (!code) throw new Error("Missing OAuth code");
@@ -619,7 +649,10 @@ export default function SpotifyLoginScreen() {
         ]}
         start={{ x: 0.05, y: 0.05 }}
         end={{ x: 0.85, y: 0.95 }}
-        style={[StyleSheet.absoluteFill, { opacity: 0.75, pointerEvents: "none" }]}
+        style={[
+          StyleSheet.absoluteFill,
+          { opacity: 0.75, pointerEvents: "none" },
+        ]}
       />
       <Animated.View
         style={[
@@ -710,7 +743,7 @@ export default function SpotifyLoginScreen() {
 
           {/* 아이콘 + 타이틀 */}
           <View style={s.headerTitleRow}>
-            <SpotifyMark size={22} />
+            <SpotifyMark size={30} />
             <Text style={s.headerTitle}>Spotify 연동</Text>
           </View>
 
@@ -781,7 +814,10 @@ export default function SpotifyLoginScreen() {
             <View style={s.mtCircleWrap}>
               {/* 로고 뒤 번짐(블룸) */}
               <Animated.View
-                style={[s.mtBloom, { opacity: mtGlowOp, pointerEvents: "none" }]}
+                style={[
+                  s.mtBloom,
+                  { opacity: mtGlowOp, pointerEvents: "none" },
+                ]}
               />
               {/* 네온 glow 링 */}
               <Animated.View
@@ -842,10 +878,10 @@ export default function SpotifyLoginScreen() {
           {/* ① 메인 CTA: Spotify 앱으로 로그인 */}
           <Pressable
             onPress={handleSpotifyApp}
-            disabled={oauthLoading}
+            disabled={oauthLoading || !isOAuthReady}
             style={({ pressed }) => [
               s.mainBtnWrap,
-              oauthLoading ? { opacity: 0.8 } : null,
+              oauthLoading || !isOAuthReady ? { opacity: 0.8 } : null,
               pressed
                 ? { transform: [{ scale: 0.985 }, { translateY: 1 }] }
                 : null,
@@ -885,7 +921,11 @@ export default function SpotifyLoginScreen() {
                   )}
                 </View>
                 <Text style={s.mainBtnText}>
-                  {oauthLoading ? "Spotify 로그인 여는 중..." : "Spotify 앱으로 로그인"}
+                  {oauthLoading
+                    ? "Spotify 로그인 여는 중..."
+                    : !isOAuthReady
+                      ? "Spotify 로그인 준비 중..."
+                      : "Spotify 앱으로 로그인"}
                 </Text>
               </LinearGradient>
             )}
@@ -901,10 +941,10 @@ export default function SpotifyLoginScreen() {
           {/* ③ 웹 브라우저로 로그인 */}
           <Pressable
             onPress={handleWebLogin}
-            disabled={oauthLoading}
+            disabled={oauthLoading || !isOAuthReady}
             style={({ pressed }) => [
               s.subBtn,
-              oauthLoading ? { opacity: 0.6 } : null,
+              oauthLoading || !isOAuthReady ? { opacity: 0.6 } : null,
               pressed ? { transform: [{ scale: 0.99 }], opacity: 0.92 } : null,
             ]}
             android_ripple={{ color: "rgba(255,255,255,0.10)" }}
