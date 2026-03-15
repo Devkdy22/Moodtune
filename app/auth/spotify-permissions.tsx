@@ -111,7 +111,7 @@ export default function SpotifyPermissionsScreen() {
       if (user) setSpotifyUser(user);
       router.replace({
         pathname: "/auth/spotify-linking",
-        params: { next: "/(tabs)", mode: "bootstrap" },
+        params: { next: "/(tabs)?skipSync=1", mode: "bootstrap" },
       } as any);
     }
   };

@@ -4,7 +4,7 @@
 //  실제 앱에서는 각 화면이 별도 스택으로 분리되나
 //  현재는 animated 전환으로 구현 (API 연동 전 UI 우선)
 // ─────────────────────────────────────────────────────────
-import { router } from "expo-router";
+import { router, useLocalSearchParams } from "expo-router";
 import React, { useEffect, useRef, useState } from "react";
 import {
   Animated,
@@ -52,7 +52,9 @@ type Phase = "syncing" | "home" | "loading" | "preview";
 
 export default function HomeScreen() {
   const insets = useSafeAreaInsets();
-  const [phase, setPhase] = useState<Phase>("syncing");
+  const params = useLocalSearchParams<{ skipSync?: string }>();
+  const skipSync = params.skipSync === "1" || params.skipSync === "true";
+  const [phase, setPhase] = useState<Phase>(skipSync ? "home" : "syncing");
   const [moodText, setMoodText] = useState("");
   const [activeToggles, setActiveToggles] = useState<Set<string>>(new Set());
   const [tracks, setTracks] = useState(MOCK_TRACKS);
