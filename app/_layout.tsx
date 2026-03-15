@@ -64,6 +64,7 @@ export default function RootLayout() {
         >
           <Stack.Screen name="auth/login" options={{ animation: "none" }} />
           <Stack.Screen name="auth/spotify" options={{ animation: "slide_from_right" }} />
+          <Stack.Screen name="expo-auth-session/[...segments]" options={{ animation: "none" }} />
           <Stack.Screen name="(tabs)" options={{ animation: "none" }} />
           <Stack.Screen
             name="result/[id]"

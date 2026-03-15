@@ -159,15 +159,11 @@ export default function SpotifyLoginScreen() {
         path: "auth/spotify-login",
       });
     }
-
-    const configuredRedirectUri = __DEV__
-      ? devWebRedirectUri
-      : prodWebRedirectUri;
-    if (configuredRedirectUri) return configuredRedirectUri;
-
+    // Web OAuth callback should always use the current origin.
+    // This avoids popup callback mismatches across localhost / vercel / exp.direct.
     const baseUrl = (
-      (__DEV__ ? devWebBaseUrl : prodWebBaseUrl) ||
       webOrigin ||
+      (__DEV__ ? devWebBaseUrl : prodWebBaseUrl) ||
       DEFAULT_WEB_BASE_URL
     ).replace(/\/+$/, "");
     return `${baseUrl}/auth/spotify-login`;
@@ -504,9 +500,11 @@ export default function SpotifyLoginScreen() {
   /* ── 핸들러 ── */
   const handleSpotifyApp = async () => {
     if (!clientId) {
+      const msg = "EXPO_PUBLIC_SPOTIFY_CLIENT_ID가 설정되지 않았어요.";
+      setOauthError(msg);
       Alert.alert(
         "환경변수 필요",
-        "EXPO_PUBLIC_SPOTIFY_CLIENT_ID가 설정되지 않았어요.",
+        msg,
       );
       return;
     }
@@ -878,10 +876,10 @@ export default function SpotifyLoginScreen() {
           {/* ① 메인 CTA: Spotify 앱으로 로그인 */}
           <Pressable
             onPress={handleSpotifyApp}
-            disabled={oauthLoading || !isOAuthReady}
+            disabled={oauthLoading}
             style={({ pressed }) => [
               s.mainBtnWrap,
-              oauthLoading || !isOAuthReady ? { opacity: 0.8 } : null,
+              oauthLoading ? { opacity: 0.8 } : null,
               pressed
                 ? { transform: [{ scale: 0.985 }, { translateY: 1 }] }
                 : null,
@@ -923,9 +921,7 @@ export default function SpotifyLoginScreen() {
                 <Text style={s.mainBtnText}>
                   {oauthLoading
                     ? "Spotify 로그인 여는 중..."
-                    : !isOAuthReady
-                      ? "Spotify 로그인 준비 중..."
-                      : "Spotify 앱으로 로그인"}
+                    : "Spotify 앱으로 로그인"}
                 </Text>
               </LinearGradient>
             )}
@@ -941,10 +937,10 @@ export default function SpotifyLoginScreen() {
           {/* ③ 웹 브라우저로 로그인 */}
           <Pressable
             onPress={handleWebLogin}
-            disabled={oauthLoading || !isOAuthReady}
+            disabled={oauthLoading}
             style={({ pressed }) => [
               s.subBtn,
-              oauthLoading || !isOAuthReady ? { opacity: 0.6 } : null,
+              oauthLoading ? { opacity: 0.6 } : null,
               pressed ? { transform: [{ scale: 0.99 }], opacity: 0.92 } : null,
             ]}
             android_ripple={{ color: "rgba(255,255,255,0.10)" }}

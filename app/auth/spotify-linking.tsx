@@ -61,6 +61,7 @@ export default function SpotifyLinkingScreen() {
   const [stage, setStage] = useState<Stage>(0);
   const [profile, setProfile] = useState<SpotifyUser | null>(null);
   const [dataSummary, setDataSummary] = useState<SpotifyBootstrapData | null>(null);
+  const [showDone, setShowDone] = useState(false);
   const tokens = useAppStore(s => s.spotifyTokens);
   const setTokens = useAppStore(s => s.setTokens);
   const setSpotifyUser = useAppStore(s => s.setSpotifyUser);
@@ -68,8 +69,34 @@ export default function SpotifyLinkingScreen() {
 
   // Dots pulse
   const dotT = useRef(new Animated.Value(0)).current;
+  const progressT = useRef(new Animated.Value(0)).current;
+  const doneOpacity = useRef(new Animated.Value(0)).current;
+  const doneScale = useRef(new Animated.Value(0.9)).current;
   const dotCount = 6;
   const dots = useMemo(() => Array.from({ length: dotCount }, (_, i) => i), []);
+
+  const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+  const ensureMinElapsed = async (startedAt: number, minMs: number) => {
+    const elapsed = Date.now() - startedAt;
+    if (elapsed < minMs) await wait(minMs - elapsed);
+  };
+
+  const playDoneMotion = () =>
+    new Promise<void>(resolve => {
+      Animated.parallel([
+        Animated.timing(doneOpacity, {
+          toValue: 1,
+          duration: 260,
+          useNativeDriver: true,
+        }),
+        Animated.spring(doneScale, {
+          toValue: 1,
+          tension: 70,
+          friction: 8,
+          useNativeDriver: true,
+        }),
+      ]).start(() => resolve());
+    });
 
   useEffect(() => {
     const loop = Animated.loop(
@@ -81,6 +108,14 @@ export default function SpotifyLinkingScreen() {
     loop.start();
     return () => loop.stop();
   }, [dotT]);
+
+  useEffect(() => {
+    Animated.timing(progressT, {
+      toValue: stage / 3,
+      duration: 340,
+      useNativeDriver: false,
+    }).start();
+  }, [progressT, stage]);
 
   useEffect(() => {
     if (mode !== "bootstrap") {
@@ -105,9 +140,10 @@ export default function SpotifyLinkingScreen() {
       try {
         // Stage 0: secure channel
         setStage(0);
-        await new Promise(r => setTimeout(r, 420));
+        await wait(520);
 
         // Stage 1: credentials check (fetch profile)
+        const stage1StartedAt = Date.now();
         setStage(1);
         if (!tokens?.accessToken || !tokens.refreshToken) {
           router.replace("/auth/spotify-login" as any);
@@ -130,21 +166,28 @@ export default function SpotifyLinkingScreen() {
           setSpotifyUser(me);
           setProfile(me);
         }
+        await ensureMinElapsed(stage1StartedAt, 850);
 
         // Stage 2: collect Spotify library bootstrap data
+        const stage2StartedAt = Date.now();
         setStage(2);
         const bootstrap = await bootstrapSpotifyData(accessToken);
         if (cancelled) return;
         setSpotifyBootstrap(bootstrap);
         setDataSummary(bootstrap);
+        await ensureMinElapsed(stage2StartedAt, 1200);
 
         // Stage 3: finalize
         setStage(3);
+        await wait(480);
+        setShowDone(true);
+        await playDoneMotion();
+        await wait(380);
 
-        const minShow = 1500;
+        const minShow = 2400;
         const elapsed = Date.now() - startedAt;
         if (elapsed < minShow) {
-          await new Promise(r => setTimeout(r, minShow - elapsed));
+          await wait(minShow - elapsed);
         }
         if (!cancelled) router.replace(nextPath as any);
       } catch (e) {
@@ -276,7 +319,7 @@ export default function SpotifyLinkingScreen() {
             accent={C.green}
           />
           <StepCard
-            state={stage === 3 ? "active" : "pending"}
+            state={stage >= 3 ? "done" : "pending"}
             label="MoodTune 시작 화면 준비"
             accent={C.green}
             dim
@@ -286,6 +329,17 @@ export default function SpotifyLinkingScreen() {
         {/* Bottom note */}
         <View style={s.bottom}>
           <View style={s.progressTrack}>
+            <Animated.View
+              style={[
+                s.progressFill,
+                {
+                  width: progressT.interpolate({
+                    inputRange: [0, 1],
+                    outputRange: ["0%", "100%"],
+                  }),
+                },
+              ]}
+            />
             <LinearGradient
               colors={["rgba(61,220,132,0.0)", "rgba(61,220,132,0.35)", "rgba(61,220,132,0.0)"]}
               start={{ x: 0, y: 0 }}
@@ -298,6 +352,18 @@ export default function SpotifyLinkingScreen() {
             <Text style={{ color: "rgba(255,255,255,0.55)" }}>🔒</Text>
           </Text>
         </View>
+
+        {showDone ? (
+          <Animated.View
+            style={[
+              s.doneWrap,
+              { opacity: doneOpacity, transform: [{ scale: doneScale }] },
+            ]}
+          >
+            <Text style={s.doneCheck}>✓</Text>
+            <Text style={s.doneText}>연결 완료, 메인으로 이동합니다</Text>
+          </Animated.View>
+        ) : null}
       </View>
     </View>
   );
@@ -511,5 +577,28 @@ const s = StyleSheet.create({
     backgroundColor: "rgba(255,255,255,0.05)",
     overflow: "hidden",
   },
+  progressFill: {
+    position: "absolute",
+    left: 0,
+    top: 0,
+    bottom: 0,
+    borderRadius: 4,
+    backgroundColor: "rgba(61,220,132,0.35)",
+  },
   note: { textAlign: "center", color: "rgba(255,255,255,0.34)", fontSize: 13.5, letterSpacing: -0.1 },
+  doneWrap: {
+    marginTop: 4,
+    alignSelf: "center",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "rgba(61,220,132,0.45)",
+    backgroundColor: "rgba(61,220,132,0.15)",
+  },
+  doneCheck: { color: "#05200f", fontSize: 14, fontWeight: "900", backgroundColor: C.green, borderRadius: 12, width: 18, height: 18, textAlign: "center", lineHeight: 18 },
+  doneText: { color: "rgba(255,255,255,0.92)", fontSize: 13, fontWeight: "700" },
 });

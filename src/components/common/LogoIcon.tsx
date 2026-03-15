@@ -6,10 +6,9 @@
 // ─────────────────────────────────────────────────────────
 import React, { useEffect, useRef } from 'react';
 import {
-  Animated, View, StyleSheet, ViewStyle,
+  Animated, Image, StyleSheet, ViewStyle,
 } from 'react-native';
 import { Colors } from '../../constants/colors';
-import MoodtuneMark from './MoodtuneMark';
 
 interface Props {
   size?: number;
@@ -63,14 +62,11 @@ export default function LogoIcon({
         style,
       ]}
     >
-      <View style={styles.inner}>
-        <MoodtuneMark
-          width={size * 1.55}
-          height={size * 1.1}
-          animated={animated}
-          style={{ opacity: 0.98 }}
-        />
-      </View>
+      <Image
+        source={require("../../../assets/images/moodtune-logo.png")}
+        resizeMode="contain"
+        style={styles.logo}
+      />
     </Animated.View>
   );
 }
@@ -88,10 +84,8 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(61,220,132,0.40)',
     backgroundColor: Colors.bgCard,
   },
-  inner: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    transform: [{ translateY: 2 }],
+  logo: {
+    width: "100%",
+    height: "100%",
   },
 });

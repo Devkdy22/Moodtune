@@ -12,7 +12,6 @@ import {
   Playlist,
   Track,
 } from '../types';
-import { MOCK_PLAYLISTS, MOCK_USER } from '../constants/mockData';
 
 // ── User Store ────────────────────────────────────────────
 interface UserSlice {
@@ -54,8 +53,7 @@ export const useAppStore = create<AppStore>()(
       spotifyTokens:   null,
       spotifyUser:     null,
       spotifyBootstrap: null,
-      // 개발 중 mock 데이터 사용; API 연동 후 [] 로 변경
-      playlists:       MOCK_PLAYLISTS,
+      playlists:       [],
       isAuthenticated: false,
 
       setTokens: (tokens) => set({ spotifyTokens: tokens, isAuthenticated: true }),
@@ -81,6 +79,7 @@ export const useAppStore = create<AppStore>()(
           spotifyTokens:   null,
           spotifyUser:     null,
           spotifyBootstrap: null,
+          playlists: [],
           isAuthenticated: false,
         }),
 
@@ -99,7 +98,19 @@ export const useAppStore = create<AppStore>()(
     }),
     {
       name:    'moodtune-store',
+      version: 2,
       storage: createJSONStorage(() => AsyncStorage),
+      migrate: (persistedState: any, version) => {
+        if (!persistedState) return persistedState;
+        if (version < 2) {
+          return {
+            ...persistedState,
+            playlists: [],
+            spotifyBootstrap: null,
+          };
+        }
+        return persistedState;
+      },
       // 민감 정보는 persist 제외 가능
       partialize: (state) => ({
         spotifyTokens:   state.spotifyTokens,
