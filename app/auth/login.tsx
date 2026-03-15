@@ -10,10 +10,10 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   Animated,
   Image,
+  Pressable,
   ScrollView,
   StyleSheet,
   Text,
-  TouchableOpacity,
   useWindowDimensions,
   View,
 } from "react-native";
@@ -514,40 +514,61 @@ export default function LoginScreen() {
 
       {/* Bottom: Buttons + terms */}
       <View style={styles.bottom}>
-        <TouchableOpacity
-          activeOpacity={0.88}
-          onPress={() => router.push("/auth/spotify" as any)}
-          style={styles.spotifyOuter}
+        <Pressable
+          onPress={() => router.push("/auth/spotify-login" as any)}
+          style={({ pressed }) => [
+            styles.spotifyOuter,
+            pressed ? { transform: [{ scale: 0.985 }, { translateY: 1 }] } : null,
+          ]}
         >
-          <LinearGradient
-            colors={[Colors.greenL, Colors.green]}
-            start={{ x: 0, y: 0 }}
-            end={{ x: 1, y: 0 }}
-            style={[styles.spotifyBtn, { height: spotifyBtnH }]}
-          >
-            <SpotifyIcon size={24} color="#07110c" />
-            <Text style={[styles.spotifyText, { fontSize: spotifyFont }]}>
-              Spotify로 로그인
-            </Text>
-          </LinearGradient>
-        </TouchableOpacity>
+          {({ pressed }) => (
+            <LinearGradient
+              colors={[Colors.greenL, Colors.green]}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 0 }}
+              style={[styles.spotifyBtn, { height: spotifyBtnH }]}
+            >
+              {pressed ? (
+                <View
+                  pointerEvents="none"
+                  style={[StyleSheet.absoluteFill, styles.pressOverlayDark]}
+                />
+              ) : null}
+              <SpotifyIcon size={24} color="#07110c" />
+              <Text style={[styles.spotifyText, { fontSize: spotifyFont }]}>
+                Spotify로 로그인
+              </Text>
+            </LinearGradient>
+          )}
+        </Pressable>
 
-        <TouchableOpacity
-          activeOpacity={0.85}
+        <Pressable
           onPress={() => router.replace("/(tabs)" as any)}
-          style={styles.demoOuter}
+          style={({ pressed }) => [
+            styles.demoOuter,
+            pressed ? { transform: [{ scale: 0.99 }], opacity: 0.92 } : null,
+          ]}
+          android_ripple={{ color: "rgba(255,255,255,0.10)" }}
         >
-          <LinearGradient
-            colors={["rgba(255,255,255,0.08)", "rgba(255,255,255,0.04)"]}
-            start={{ x: 0.1, y: 0 }}
-            end={{ x: 0.9, y: 1 }}
-            style={[styles.demoBtn, { height: demoBtnH }]}
-          >
-            <Text style={[styles.demoText, { fontSize: demoFont }]}>
-              데모로 체험해보기
-            </Text>
-          </LinearGradient>
-        </TouchableOpacity>
+          {({ pressed }) => (
+            <LinearGradient
+              colors={["rgba(255,255,255,0.08)", "rgba(255,255,255,0.04)"]}
+              start={{ x: 0.1, y: 0 }}
+              end={{ x: 0.9, y: 1 }}
+              style={[styles.demoBtn, { height: demoBtnH }]}
+            >
+              {pressed ? (
+                <View
+                  pointerEvents="none"
+                  style={[StyleSheet.absoluteFill, styles.pressOverlayLight]}
+                />
+              ) : null}
+              <Text style={[styles.demoText, { fontSize: demoFont }]}>
+                데모로 체험해보기
+              </Text>
+            </LinearGradient>
+          )}
+        </Pressable>
 
         <Text style={styles.terms}>
           로그인하면 <Text style={styles.termsAccent}>이용약관</Text> 및{" "}
@@ -559,33 +580,24 @@ export default function LoginScreen() {
 
   return (
     <View style={styles.bgRoot}>
-      <LinearGradient
-        colors={["#050b08", "#081611", "#040806"]}
-        start={{ x: 0.18, y: 0 }}
-        end={{ x: 0.82, y: 1 }}
+      {/* <LinearGradient
+        colors={["#020a06", "#062015", "#010603"]}
+        locations={[0, 0.22, 0.8]}
         style={StyleSheet.absoluteFill}
+      /> */}
+      <LinearGradient
+        pointerEvents="none"
+        colors={[
+          "rgba(61,220,132,0.16)",
+          "rgba(61,220,132,0.06)",
+          "rgba(0,0,0,0)",
+        ]}
+        start={{ x: 0.05, y: 0.05 }}
+        end={{ x: 0.85, y: 0.95 }}
+        style={[StyleSheet.absoluteFill, { opacity: 0.75 }]}
       />
-      <SoftOrb
-        size={Math.max(520, W * 1.35)}
-        color="rgba(61,220,132,0.18)"
-        style={styles.bgOrbTL}
-        duration={11000}
-        amplitude={22}
-      />
-      <SoftOrb
-        size={Math.max(520, W * 1.25)}
-        color="rgba(35,140,85,0.14)"
-        style={styles.bgOrbBR}
-        duration={13000}
-        amplitude={18}
-      />
-      <SoftOrb
-        size={Math.max(360, W * 0.95)}
-        color="rgba(61,220,132,0.10)"
-        style={styles.bgOrbMid}
-        duration={15000}
-        amplitude={14}
-      />
+      <View pointerEvents="none" style={styles.bgGlowTop} />
+      <View pointerEvents="none" style={styles.bgGlowBottom} />
 
       <ScrollView
         style={styles.scroll}
@@ -607,21 +619,37 @@ export default function LoginScreen() {
 const styles = StyleSheet.create({
   bgRoot: {
     flex: 1,
-    backgroundColor: "#040806",
+    backgroundColor: "#030e07",
     position: "relative",
     overflow: "hidden",
   },
-  bgOrbTL: {
-    left: -240,
-    top: -300,
+  bgGlowTop: {
+    position: "absolute",
+    top: -200,
+    left: -200,
+    width: 440,
+    height: 440,
+    borderRadius: 210,
+    backgroundColor: "rgba(61,220,132,0.08)",
+    shadowColor: "rgba(61,220,132,0.75)",
+    shadowOpacity: 0.2,
+    shadowRadius: 30,
+    shadowOffset: { width: 0, height: 0 },
+    elevation: 8,
   },
-  bgOrbBR: {
-    right: -260,
-    bottom: -260,
-  },
-  bgOrbMid: {
-    left: 30,
-    top: 250,
+  bgGlowBottom: {
+    position: "absolute",
+    bottom: -240,
+    right: -220,
+    width: 520,
+    height: 520,
+    borderRadius: 360,
+    backgroundColor: "rgba(61,220,132,0.07)",
+    shadowColor: "rgba(61,220,132,0.65)",
+    shadowOpacity: 0.2,
+    shadowRadius: 50,
+    shadowOffset: { width: 0, height: 0 },
+    elevation: 8,
   },
   root: {
     flexGrow: 1,
@@ -786,6 +814,12 @@ const styles = StyleSheet.create({
     borderRadius: 999,
     alignItems: "center",
     justifyContent: "center",
+  },
+  pressOverlayDark: {
+    backgroundColor: "rgba(0,0,0,0.10)",
+  },
+  pressOverlayLight: {
+    backgroundColor: "rgba(255,255,255,0.06)",
   },
   demoText: {
     fontSize: 16,
