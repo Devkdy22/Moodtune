@@ -3,6 +3,7 @@
 //  라이브러리 화면 — 저장된 플레이리스트 목록
 // ─────────────────────────────────────────────────────────
 import { router } from "expo-router";
+import { Music4 } from "lucide-react-native";
 import React, { useState } from "react";
 import {
   FlatList,
@@ -44,7 +45,7 @@ export default function LibraryScreen() {
   }
 
   return (
-    <ScreenBackground>
+    <ScreenBackground intensity="normal">
       <StatusBar barStyle="light-content" />
       <View style={{ flex: 1 }}>
         {/* 헤더 */}
@@ -90,7 +91,9 @@ export default function LibraryScreen() {
         {/* 플레이리스트 목록 */}
         {filtered.length === 0 ? (
           <View style={styles.emptyState}>
-            <Text style={styles.emptyIcon}>🎵</Text>
+            <View style={styles.emptyIconWrap}>
+              <Music4 size={42} color={Colors.greenL} strokeWidth={2.1} />
+            </View>
             <Text style={styles.emptyTitle}>저장된 라이브러리 목록이 없어요</Text>
             <Text style={styles.emptySub}>
               {userName}님을 위한 플레이리스트를 생성해보세요
@@ -197,8 +200,15 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     paddingHorizontal: 40,
   },
-  emptyIcon: {
-    fontSize: 56,
+  emptyIconWrap: {
+    width: 84,
+    height: 84,
+    borderRadius: 42,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(61,220,132,0.12)",
+    borderWidth: 1,
+    borderColor: "rgba(61,220,132,0.28)",
     marginBottom: 16,
   },
   emptyTitle: {

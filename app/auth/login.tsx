@@ -6,6 +6,7 @@
 // ─────────────────────────────────────────────────────────
 import { LinearGradient } from "expo-linear-gradient";
 import { router } from "expo-router";
+import { AudioWaveform, Bot, Sparkles, Zap } from "lucide-react-native";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   Animated,
@@ -26,13 +27,14 @@ import Svg, {
   LinearGradient as SvgLinearGradient,
   Text as SvgText,
 } from "react-native-svg";
+import ScreenBackground from "../../src/components/common/ScreenBackground";
 import { Colors } from "../../src/constants/colors";
 
 const FEATURE_PILLS = [
-  { icon: "🤖", label: "AI 취향 분석" },
-  { icon: "✨", label: "무드 기반 추천" },
-  { icon: "⚡", label: "빠른 생성" },
-  { icon: "🎵", label: "Spotify 연동" },
+  { Icon: Bot, label: "AI 취향 분석" },
+  { Icon: Sparkles, label: "무드 기반 추천" },
+  { Icon: Zap, label: "빠른 생성" },
+  { Icon: AudioWaveform, label: "Spotify 연동" },
 ];
 
 function clamp(n: number, min: number, max: number) {
@@ -504,9 +506,10 @@ export default function LoginScreen() {
                 { minWidth: Math.min(148, (W - 60 - 22) / 2) },
               ]}
             >
-              <Text style={[styles.pillText, { fontSize: pillSize }]}>
-                <Text style={styles.pillIcon}>{p.icon}</Text> {p.label}
-              </Text>
+              <View style={styles.pillInner}>
+                <p.Icon size={14} color="rgba(180,255,226,0.95)" strokeWidth={2.2} />
+                <Text style={[styles.pillText, { fontSize: pillSize }]}>{p.label}</Text>
+              </View>
             </View>
           ))}
         </View>
@@ -579,26 +582,7 @@ export default function LoginScreen() {
   );
 
   return (
-    <View style={styles.bgRoot}>
-      {/* <LinearGradient
-        colors={["#020a06", "#062015", "#010603"]}
-        locations={[0, 0.22, 0.8]}
-        style={StyleSheet.absoluteFill}
-      /> */}
-      <LinearGradient
-        pointerEvents="none"
-        colors={[
-          "rgba(61,220,132,0.16)",
-          "rgba(61,220,132,0.06)",
-          "rgba(0,0,0,0)",
-        ]}
-        start={{ x: 0.05, y: 0.05 }}
-        end={{ x: 0.85, y: 0.95 }}
-        style={[StyleSheet.absoluteFill, { opacity: 0.75 }]}
-      />
-      <View pointerEvents="none" style={styles.bgGlowTop} />
-      <View pointerEvents="none" style={styles.bgGlowBottom} />
-
+    <ScreenBackground intensity="strong">
       <ScrollView
         style={styles.scroll}
         bounces={false}
@@ -612,45 +596,11 @@ export default function LoginScreen() {
       >
         {content}
       </ScrollView>
-    </View>
+    </ScreenBackground>
   );
 }
 
 const styles = StyleSheet.create({
-  bgRoot: {
-    flex: 1,
-    backgroundColor: "#030e07",
-    position: "relative",
-    overflow: "hidden",
-  },
-  bgGlowTop: {
-    position: "absolute",
-    top: -200,
-    left: -200,
-    width: 440,
-    height: 440,
-    borderRadius: 210,
-    backgroundColor: "rgba(61,220,132,0.08)",
-    shadowColor: "rgba(61,220,132,0.75)",
-    shadowOpacity: 0.2,
-    shadowRadius: 30,
-    shadowOffset: { width: 0, height: 0 },
-    elevation: 8,
-  },
-  bgGlowBottom: {
-    position: "absolute",
-    bottom: -240,
-    right: -220,
-    width: 520,
-    height: 520,
-    borderRadius: 360,
-    backgroundColor: "rgba(61,220,132,0.07)",
-    shadowColor: "rgba(61,220,132,0.65)",
-    shadowOpacity: 0.2,
-    shadowRadius: 50,
-    shadowOffset: { width: 0, height: 0 },
-    elevation: 8,
-  },
   root: {
     flexGrow: 1,
     paddingHorizontal: 22,
@@ -764,13 +714,15 @@ const styles = StyleSheet.create({
     borderWidth: 2,
     borderColor: "rgba(61,220,132,0.30)",
   },
+  pillInner: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+  },
   pillText: {
     color: "rgba(180,255,226,0.95)",
     fontFamily: "DMSans-Medium",
     letterSpacing: -0.3,
-  },
-  pillIcon: {
-    color: "rgba(180,255,226,0.95)",
   },
   bottom: {
     gap: 10,

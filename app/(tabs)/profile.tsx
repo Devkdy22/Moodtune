@@ -4,6 +4,24 @@
 //  3탭: 내 정보 / 내 플리 / 설정
 // ─────────────────────────────────────────────────────────
 import { router } from "expo-router";
+import {
+  Bell,
+  ChartColumnBig,
+  ChevronRight,
+  CreditCard,
+  History,
+  IdCard,
+  LibraryBig,
+  Mail,
+  MoonStar,
+  Music2,
+  PencilLine,
+  ShieldCheck,
+  Smartphone,
+  Target,
+  Trash2,
+  Upload,
+} from "lucide-react-native";
 import React, { useState } from "react";
 import {
   ScrollView,
@@ -27,10 +45,10 @@ import { useAppStore } from "../../src/store/useAppStore";
 const PROFILE_TABS = ["내 정보", "내 플리", "설정"];
 
 const SETTING_ROWS = [
-  { icon: "🔔", label: "알림", toggle: true },
-  { icon: "🌙", label: "다크 모드", toggle: true },
-  { icon: "📱", label: "데이터 절약", toggle: false },
-  { icon: "📊", label: "사용 통계 공유", toggle: false },
+  { Icon: Bell, label: "알림", toggle: true },
+  { Icon: MoonStar, label: "다크 모드", toggle: true },
+  { Icon: Smartphone, label: "데이터 절약", toggle: false },
+  { Icon: ChartColumnBig, label: "사용 통계 공유", toggle: false },
 ];
 
 export default function ProfileScreen() {
@@ -60,17 +78,17 @@ export default function ProfileScreen() {
     { label: "즐겨찾기", value: likedCount },
   ];
   const accountRows = [
-    { icon: "✏️", label: "이름", sub: displayName },
-    { icon: "📧", label: "이메일", sub: email },
-    { icon: "💳", label: "Spotify 플랜", sub: spotifyUser?.product === "premium" ? "Premium" : "Free" },
-    { icon: "🆔", label: "Spotify ID", sub: spotifyUser?.id ?? "-" },
-    { icon: "🔐", label: "연결 상태", sub: "OAuth 2.0 연결 완료" },
+    { Icon: PencilLine, label: "이름", sub: displayName },
+    { Icon: Mail, label: "이메일", sub: email },
+    { Icon: CreditCard, label: "Spotify 플랜", sub: spotifyUser?.product === "premium" ? "Premium" : "Free" },
+    { Icon: IdCard, label: "Spotify ID", sub: spotifyUser?.id ?? "-" },
+    { Icon: ShieldCheck, label: "연결 상태", sub: "OAuth 2.0 연결 완료" },
   ];
   const aiRows = [
-    { icon: "🎯", label: "AI 추천 정확도", sub: trackCount >= 10 ? "현재: 높음" : "데이터 수집 중" },
-    { icon: "🎵", label: "선호 장르", sub: topGenre },
-    { icon: "📚", label: "분석된 플레이리스트", sub: `${spotifyBootstrap?.playlists?.length ?? 0}개` },
-    { icon: "🕘", label: "최근 재생 분석", sub: `${spotifyBootstrap?.recentlyPlayed?.length ?? 0}곡` },
+    { Icon: Target, label: "AI 추천 정확도", sub: trackCount >= 10 ? "현재: 높음" : "데이터 수집 중" },
+    { Icon: Music2, label: "선호 장르", sub: topGenre },
+    { Icon: LibraryBig, label: "분석된 플레이리스트", sub: `${spotifyBootstrap?.playlists?.length ?? 0}개` },
+    { Icon: History, label: "최근 재생 분석", sub: `${spotifyBootstrap?.recentlyPlayed?.length ?? 0}곡` },
   ];
 
   const toggleMap: Record<string, [boolean, (v: boolean) => void]> = {
@@ -81,7 +99,7 @@ export default function ProfileScreen() {
   };
 
   return (
-    <ScreenBackground>
+    <ScreenBackground intensity="normal">
       <StatusBar barStyle="light-content" />
       <View style={{ flex: 1 }}>
         {/* 헤더 */}
@@ -188,12 +206,14 @@ function MyInfoTab({ accountRows, aiRows }: any) {
             style={[styles.infoRow, i > 0 && styles.infoRowBorder]}
             activeOpacity={0.75}
           >
-            <Text style={styles.infoRowIcon}>{row.icon}</Text>
+            <View style={styles.infoRowIcon}>
+              <row.Icon size={18} color={Colors.greenL} strokeWidth={2.1} />
+            </View>
             <View style={{ flex: 1 }}>
               <Text style={styles.infoRowLabel}>{row.label}</Text>
               <Text style={styles.infoRowSub}>{row.sub}</Text>
             </View>
-            <Text style={styles.chevron}>›</Text>
+            <ChevronRight size={18} color={Colors.t3} />
           </TouchableOpacity>
         ))}
       </GlassCard>
@@ -206,12 +226,14 @@ function MyInfoTab({ accountRows, aiRows }: any) {
             style={[styles.infoRow, i > 0 && styles.infoRowBorder]}
             activeOpacity={0.75}
           >
-            <Text style={styles.infoRowIcon}>{row.icon}</Text>
+            <View style={styles.infoRowIcon}>
+              <row.Icon size={18} color={Colors.greenL} strokeWidth={2.1} />
+            </View>
             <View style={{ flex: 1 }}>
               <Text style={styles.infoRowLabel}>{row.label}</Text>
               <Text style={styles.infoRowSub}>{row.sub}</Text>
             </View>
-            <Text style={styles.chevron}>›</Text>
+            <ChevronRight size={18} color={Colors.t3} />
           </TouchableOpacity>
         ))}
       </GlassCard>
@@ -254,7 +276,9 @@ function SettingsTab({ rows, toggleMap, onLogout }: any) {
               key={row.label}
               style={[styles.infoRow, i > 0 && styles.infoRowBorder]}
             >
-              <Text style={styles.infoRowIcon}>{row.icon}</Text>
+              <View style={styles.infoRowIcon}>
+                <row.Icon size={18} color={Colors.greenL} strokeWidth={2.1} />
+              </View>
               <Text style={[styles.infoRowLabel, { flex: 1 }]}>
                 {row.label}
               </Text>
@@ -276,18 +300,22 @@ function SettingsTab({ rows, toggleMap, onLogout }: any) {
       <Text style={styles.sectionLabel}>계정</Text>
       <GlassCard padding={0} style={{ overflow: "hidden", marginBottom: 12 }}>
         <TouchableOpacity style={styles.infoRow}>
-          <Text style={styles.infoRowIcon}>📤</Text>
+          <View style={styles.infoRowIcon}>
+            <Upload size={18} color={Colors.greenL} strokeWidth={2.1} />
+          </View>
           <Text style={[styles.infoRowLabel, { flex: 1 }]}>
             데이터 내보내기
           </Text>
-          <Text style={styles.chevron}>›</Text>
+          <ChevronRight size={18} color={Colors.t3} />
         </TouchableOpacity>
         <TouchableOpacity style={[styles.infoRow, styles.infoRowBorder]}>
-          <Text style={styles.infoRowIcon}>🗑</Text>
+          <View style={styles.infoRowIcon}>
+            <Trash2 size={18} color={Colors.error} strokeWidth={2.1} />
+          </View>
           <Text style={[styles.infoRowLabel, { flex: 1, color: Colors.error }]}>
             계정 삭제
           </Text>
-          <Text style={styles.chevron}>›</Text>
+          <ChevronRight size={18} color={Colors.t3} />
         </TouchableOpacity>
       </GlassCard>
 
@@ -427,9 +455,8 @@ const styles = StyleSheet.create({
     borderTopColor: Colors.glassBd,
   },
   infoRowIcon: {
-    fontSize: 18,
     width: 28,
-    textAlign: "center",
+    alignItems: "center",
   },
   infoRowLabel: {
     fontSize: FontSize.md,
@@ -441,11 +468,6 @@ const styles = StyleSheet.create({
     color: Colors.t2,
     marginTop: 2,
   },
-  chevron: {
-    fontSize: 20,
-    color: Colors.t3,
-  },
-
   versionText: {
     fontSize: FontSize.sm,
     color: Colors.t3,

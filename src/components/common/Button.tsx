@@ -6,7 +6,7 @@
 import React from 'react';
 import {
   TouchableOpacity, Text, StyleSheet,
-  ViewStyle, TextStyle, ActivityIndicator,
+  ViewStyle, TextStyle, ActivityIndicator, View,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Colors } from '../../constants/colors';
@@ -25,25 +25,43 @@ interface PrimaryProps {
 export function PrimaryButton({
   label, onPress, loading, disabled, style, fontSize = 15,
 }: PrimaryProps) {
+  const isDisabled = Boolean(disabled || loading);
+
   return (
     <TouchableOpacity
       onPress={onPress}
-      disabled={disabled || loading}
-      activeOpacity={0.85}
-      style={[styles.primaryWrap, style]}
+      disabled={isDisabled}
+      activeOpacity={isDisabled ? 1 : 0.85}
+      style={[
+        styles.primaryWrap,
+        isDisabled && styles.primaryWrapDisabled,
+        style,
+      ]}
     >
-      <LinearGradient
-        colors={['#3ddc84', '#1db864']}
-        start={{ x: 0, y: 0 }}
-        end={{ x: 1, y: 0 }}
-        style={styles.primaryGradient}
-      >
-        {loading ? (
-          <ActivityIndicator color="#000" size="small" />
-        ) : (
-          <Text style={[styles.primaryText, { fontSize }]}>{label}</Text>
-        )}
-      </LinearGradient>
+      {isDisabled ? (
+        <View style={[styles.primaryGradient, styles.primaryDisabledSurface]}>
+          {loading ? (
+            <ActivityIndicator color="rgba(255,255,255,0.64)" size="small" />
+          ) : (
+            <Text style={[styles.primaryText, styles.primaryTextDisabled, { fontSize }]}>
+              {label}
+            </Text>
+          )}
+        </View>
+      ) : (
+        <LinearGradient
+          colors={['#3ddc84', '#1db864']}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 0 }}
+          style={styles.primaryGradient}
+        >
+          {loading ? (
+            <ActivityIndicator color="#000" size="small" />
+          ) : (
+            <Text style={[styles.primaryText, { fontSize }]}>{label}</Text>
+          )}
+        </LinearGradient>
+      )}
     </TouchableOpacity>
   );
 }
@@ -100,16 +118,28 @@ const styles = StyleSheet.create({
     shadowRadius: 18,
     elevation: 8,
   },
+  primaryWrapDisabled: {
+    shadowOpacity: 0,
+    elevation: 0,
+  },
   primaryGradient: {
     height: 52,
     alignItems: 'center',
     justifyContent: 'center',
     paddingHorizontal: 32,
   },
+  primaryDisabledSurface: {
+    backgroundColor: "rgba(255,255,255,0.06)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.14)",
+  },
   primaryText: {
     color: '#000',
     fontWeight: '800',
     letterSpacing: -0.2,
+  },
+  primaryTextDisabled: {
+    color: "rgba(255,255,255,0.56)",
   },
 
   // Glass

@@ -5,12 +5,38 @@
 //  현재는 animated 전환으로 구현 (API 연동 전 UI 우선)
 // ─────────────────────────────────────────────────────────
 import { router, useLocalSearchParams } from "expo-router";
+import {
+  Bike,
+  BookOpenText,
+  Clock3,
+  Coffee,
+  Disc3,
+  Dumbbell,
+  Flame,
+  Hand,
+  HeartPulse,
+  Leaf,
+  LucideIcon,
+  MoonStar,
+  Music2,
+  Rabbit,
+  RefreshCw,
+  ShipWheel,
+  SlidersHorizontal,
+  Sparkles,
+  Sunrise,
+  Timer,
+  Waves,
+} from "lucide-react-native";
 import React, { useEffect, useRef, useState } from "react";
 import {
   Animated,
   Dimensions,
+  Keyboard,
   KeyboardAvoidingView,
+  Modal,
   Platform,
+  Pressable,
   ScrollView,
   StatusBar,
   StyleSheet,
@@ -29,35 +55,226 @@ import TrackDetailModal from "../../src/components/music/TrackDetailModal";
 import TrackItem from "../../src/components/music/TrackItem";
 import { Colors } from "../../src/constants/colors";
 import { FontSize, Radius } from "../../src/constants/layout";
-import {
-  MOCK_TRACKS,
-  MOOD_PILLS,
-} from "../../src/constants/mockData";
+import { MOCK_TRACKS, MOOD_PILLS } from "../../src/constants/mockData";
 import { useAppStore } from "../../src/store/useAppStore";
 import { Track } from "../../src/types";
 
 const { width: W } = Dimensions.get("window");
+const HOME_SCROLL_BOTTOM_SPACER = Platform.OS === "ios" ? 188 : 198;
+const HOME_CTA_BOTTOM_OFFSET = Platform.OS === "ios" ? 92 : 98;
 
 const GENRE_TOGGLES = [
-  { id: "genre", icon: "💿", label: "장르 선택" },
-  { id: "length", icon: "⏱", label: "길이" },
-  { id: "mood", icon: "🎚", label: "분위기" },
-  { id: "pop", icon: "🌟", label: "인기도" },
-];
+  {
+    id: "genre",
+    Icon: Disc3,
+    label: "장르 선택",
+    desc: "좋아하는 음악 스타일",
+  },
+  { id: "length", Icon: Clock3, label: "길이", desc: "플레이리스트 재생 시간" },
+  {
+    id: "mood",
+    Icon: SlidersHorizontal,
+    label: "분위기",
+    desc: "감정/템포 무드 방향",
+  },
+  { id: "pop", Icon: Sparkles, label: "인기도", desc: "대중성 또는 숨은 곡" },
+] as const;
+
+type SettingId = (typeof GENRE_TOGGLES)[number]["id"];
+type SettingOption = { label: string; prompt: string };
+type SettingSelection = Record<SettingId, SettingOption | null>;
+
+const SETTING_OPTIONS: Record<SettingId, SettingOption[]> = {
+  genre: [
+    { label: "팝/인디 중심", prompt: "장르는 팝과 인디 위주로 구성해줘." },
+    { label: "재즈/소울 중심", prompt: "장르는 재즈와 소울 위주로 구성해줘." },
+    { label: "힙합/R&B 중심", prompt: "장르는 힙합과 R&B 위주로 구성해줘." },
+    {
+      label: "EDM/일렉 중심",
+      prompt: "장르는 EDM과 일렉트로닉 위주로 구성해줘.",
+    },
+  ],
+  length: [
+    { label: "1시간 이내", prompt: "총 길이는 1시간 이내로 구성해줘." },
+    { label: "1시간 30분 내외", prompt: "총 길이는 1시간 30분 내외로 맞춰줘." },
+    { label: "2시간 이상", prompt: "총 길이는 2시간 이상으로 구성해줘." },
+  ],
+  mood: [
+    {
+      label: "차분하고 잔잔하게",
+      prompt: "전체 분위기는 차분하고 잔잔하게 유지해줘.",
+    },
+    {
+      label: "밝고 에너지 있게",
+      prompt: "전체 분위기는 밝고 에너지 있게 구성해줘.",
+    },
+    {
+      label: "몽환적이고 감성적으로",
+      prompt: "전체 분위기는 몽환적이고 감성적으로 구성해줘.",
+    },
+  ],
+  pop: [
+    {
+      label: "유명한 곡 위주",
+      prompt: "인지도 높은 유명한 곡 위주로 추천해줘.",
+    },
+    {
+      label: "숨은 명곡 위주",
+      prompt: "숨은 명곡과 발견형 트랙 위주로 추천해줘.",
+    },
+    { label: "균형 있게", prompt: "유명곡과 숨은 곡을 균형 있게 섞어줘." },
+  ],
+};
 
 const LOADING_STEPS = ["무드 분석 중", "음악 매칭 중", "플레이리스트 생성 중"];
+const MOOD_SUGGESTION_COUNT = 5;
+
+const MOOD_ICON_POOL: LucideIcon[] = [
+  Sunrise,
+  MoonStar,
+  Dumbbell,
+  BookOpenText,
+  HeartPulse,
+  Sparkles,
+  Coffee,
+  Waves,
+  Leaf,
+  Flame,
+  Rabbit,
+  Bike,
+  ShipWheel,
+];
+
+const EXTRA_MOOD_SUGGESTIONS = [
+  {
+    id: "x1",
+    label: "퇴근 후 리프레시",
+    text: "부드럽고 리듬감 있는 팝/인디로 하루를 정리하는 40분",
+  },
+  {
+    id: "x2",
+    label: "집중 코딩 모드",
+    text: "가사 적은 일렉트로닉과 로파이로 몰입도를 높이는 90분",
+  },
+  {
+    id: "x3",
+    label: "감성 산책",
+    text: "잔잔한 어쿠스틱과 시티팝으로 걷기 좋은 50분",
+  },
+  {
+    id: "x4",
+    label: "카페 브런치",
+    text: "재즈 보컬과 소울 기반의 따뜻한 플레이리스트 60분",
+  },
+];
+
+type MoodSuggestionSeed = {
+  id: string;
+  label: string;
+  text: string;
+};
+
+type MoodSuggestionItem = MoodSuggestionSeed & {
+  Icon: LucideIcon;
+};
+
+const normalizeMoodLabel = (label: string) =>
+  label.replace(/^[^\p{L}\p{N}]+/u, "").trim();
+
+const DYNAMIC_CONTEXT = [
+  "출근길",
+  "퇴근길",
+  "밤산책",
+  "주말 아침",
+  "카페 작업",
+  "운동 전",
+  "운동 후",
+  "샤워 후",
+  "집중 타임",
+  "감성 충전",
+];
+const DYNAMIC_MOODS = [
+  "산뜻한 팝",
+  "몽환 신스",
+  "따뜻한 어쿠스틱",
+  "저음 힙합",
+  "재즈 칠",
+  "드림 인디",
+  "부스터 EDM",
+];
+const DYNAMIC_DURATIONS = ["30분", "40분", "50분", "60분", "75분"];
+
+const GENERATED_MOOD_SUGGESTIONS: MoodSuggestionSeed[] =
+  DYNAMIC_CONTEXT.flatMap((context, ci) =>
+    DYNAMIC_MOODS.slice(0, 5).map((mood, mi) => {
+      const duration = DYNAMIC_DURATIONS[(ci + mi) % DYNAMIC_DURATIONS.length];
+      return {
+        id: `g-${ci}-${mi}`,
+        label: `${context} ${mood}`,
+        text: `${context}에 어울리는 ${mood} 중심의 플레이리스트 ${duration}`,
+      };
+    }),
+  );
+
+const MOOD_SUGGESTION_POOL: MoodSuggestionSeed[] = [
+  ...MOOD_PILLS,
+  ...EXTRA_MOOD_SUGGESTIONS,
+  ...GENERATED_MOOD_SUGGESTIONS,
+].map((pill, i) => ({
+  ...pill,
+  label: normalizeMoodLabel(pill.label),
+}));
+
+function pickMoodSuggestions(
+  count: number,
+  excludeIds: string[] = [],
+): MoodSuggestionItem[] {
+  const candidates = MOOD_SUGGESTION_POOL.filter(
+    item => !excludeIds.includes(item.id),
+  );
+  const source = candidates.length >= count ? candidates : MOOD_SUGGESTION_POOL;
+  const shuffled = [...source].sort(() => Math.random() - 0.5);
+  const selected = shuffled.slice(0, count);
+  const iconBag = [...MOOD_ICON_POOL].sort(() => Math.random() - 0.5);
+  return selected.map((item, idx) => ({
+    ...item,
+    Icon: iconBag[idx],
+  }));
+}
 
 type Phase = "syncing" | "home" | "loading" | "preview";
+
+function composePrompt(baseText: string, selections: SettingSelection): string {
+  const base = baseText.trim().replace(/\s+/g, " ");
+  const selectedPrompts = Object.values(selections)
+    .filter((v): v is SettingOption => Boolean(v))
+    .map(v => v.prompt.trim().replace(/[.!?]$/, ""));
+
+  if (!selectedPrompts.length) return base;
+
+  return `${base}\n\n추가 요청: ${selectedPrompts.join(" 그리고 ")}.`;
+}
 
 export default function HomeScreen() {
   const insets = useSafeAreaInsets();
   const spotifyUser = useAppStore(s => s.spotifyUser);
   const spotifyBootstrap = useAppStore(s => s.spotifyBootstrap);
+  const setMoodInput = useAppStore(s => s.setMoodInput);
   const params = useLocalSearchParams<{ skipSync?: string }>();
   const skipSync = params.skipSync === "1" || params.skipSync === "true";
   const [phase, setPhase] = useState<Phase>(skipSync ? "home" : "syncing");
   const [moodText, setMoodText] = useState("");
-  const [activeToggles, setActiveToggles] = useState<Set<string>>(new Set());
+  const [moodSuggestions, setMoodSuggestions] = useState<MoodSuggestionItem[]>(
+    () => pickMoodSuggestions(MOOD_SUGGESTION_COUNT),
+  );
+  const [selections, setSelections] = useState<SettingSelection>({
+    genre: null,
+    length: null,
+    mood: null,
+    pop: null,
+  });
+  const [settingPickerTarget, setSettingPickerTarget] =
+    useState<SettingId | null>(null);
   const [tracks, setTracks] = useState<Track[]>(MOCK_TRACKS);
   const [selectedTrack, setSelectedTrack] = useState<Track | null>(null);
   const [showModal, setShowModal] = useState(false);
@@ -75,12 +292,20 @@ export default function HomeScreen() {
       .filter(t => t.id && t.name)
       .map((t, i) => ({
         id: t.id,
-        emoji: ["🎧", "🎵", "🎶", "🔥", "✨"][i % 5],
+        emoji: ["♬", "♫", "♪", "♩", "♭"][i % 5],
         name: t.name,
-        artist: t.artists.map(a => a.name).filter(Boolean).join(", ") || "Unknown Artist",
+        artist:
+          t.artists
+            .map(a => a.name)
+            .filter(Boolean)
+            .join(", ") || "Unknown Artist",
         duration: "3:00",
-        gradientStart: ["#1a2535", "#22323f", "#2a2138", "#163026", "#2f2420"][i % 5],
-        gradientEnd: ["#0e1822", "#162730", "#171728", "#0b1d17", "#1f1612"][i % 5],
+        gradientStart: ["#1a2535", "#22323f", "#2a2138", "#163026", "#2f2420"][
+          i % 5
+        ],
+        gradientEnd: ["#0e1822", "#162730", "#171728", "#0b1d17", "#1f1612"][
+          i % 5
+        ],
         album: t.album?.name || "Spotify",
         year: new Date().getFullYear(),
         bpm: 110,
@@ -107,10 +332,11 @@ export default function HomeScreen() {
       setTimeout(() => setLoadingStep(1), 1000),
       setTimeout(() => setLoadingStep(2), 2200),
       setTimeout(() => {
+        const finalPrompt = composePrompt(moodText, selections);
         useAppStore.getState().setCurrentPlaylist({
           id: "gen_1",
           name: "AI 추천 플레이리스트",
-          coverEmoji: "🎷",
+          coverEmoji: "♬",
           gradientStart: "#1a2535",
           gradientEnd: "#0e1822",
           trackCount: tracks.length,
@@ -118,13 +344,13 @@ export default function HomeScreen() {
           liked: false,
           tracks,
           createdAt: new Date(),
-          moodInput: moodText,
+          moodInput: finalPrompt,
         });
         goTo("preview");
       }, 3600),
     ];
     return () => timers.forEach(clearTimeout);
-  }, [phase]);
+  }, [phase, moodText, selections, tracks]);
 
   function goTo(next: Phase) {
     Animated.timing(fadeAnim, {
@@ -143,15 +369,45 @@ export default function HomeScreen() {
 
   function startGeneration() {
     if (!moodText.trim()) return;
+    const finalPrompt = composePrompt(moodText, selections);
+    setMoodInput(finalPrompt);
     goTo("loading");
   }
 
-  function toggleGenre(id: string) {
-    setActiveToggles(prev => {
-      const next = new Set(prev);
-      next.has(id) ? next.delete(id) : next.add(id);
-      return next;
+  function refreshMoodSuggestions() {
+    setMoodSuggestions(prev =>
+      pickMoodSuggestions(
+        MOOD_SUGGESTION_COUNT,
+        prev.map(v => v.id),
+      ),
+    );
+  }
+
+  function resetMoodText() {
+    setMoodText("");
+  }
+
+  function resetAllSettings() {
+    setSelections({
+      genre: null,
+      length: null,
+      mood: null,
+      pop: null,
     });
+  }
+
+  function openSettingPicker(id: SettingId) {
+    setSettingPickerTarget(id);
+  }
+
+  function selectSettingOption(id: SettingId, option: SettingOption) {
+    setSelections(prev => ({ ...prev, [id]: option }));
+    setSettingPickerTarget(null);
+  }
+
+  function clearSettingOption(id: SettingId) {
+    setSelections(prev => ({ ...prev, [id]: null }));
+    setSettingPickerTarget(null);
   }
 
   function deleteTrack(id: string) {
@@ -172,20 +428,34 @@ export default function HomeScreen() {
   function saveToSpotify() {
     router.push("/result/gen_1" as any);
   }
+  const canGenerate = moodText.trim().length > 0;
+  const canResetInput = moodText.trim().length > 0;
+  const canResetSettings = Object.values(selections).some(Boolean);
+  const finalPrompt = composePrompt(moodText, selections);
 
   return (
-    <ScreenBackground>
+    <ScreenBackground intensity="strong">
       <StatusBar barStyle="light-content" />
       <Animated.View style={[{ flex: 1 }, { opacity: fadeAnim }]}>
-        {phase === "syncing" && <SyncingView insets={insets} userFirstName={userFirstName} />}
+        {phase === "syncing" && (
+          <SyncingView insets={insets} userFirstName={userFirstName} />
+        )}
         {phase === "home" && (
           <HomeInputView
             insets={insets}
             userFirstName={userFirstName}
             moodText={moodText}
             setMoodText={setMoodText}
-            activeToggles={activeToggles}
-            onToggle={toggleGenre}
+            moodSuggestions={moodSuggestions}
+            onRefreshMoods={refreshMoodSuggestions}
+            onResetInput={resetMoodText}
+            canResetInput={canResetInput}
+            canGenerate={canGenerate}
+            finalPrompt={finalPrompt}
+            selections={selections}
+            onOpenSetting={openSettingPicker}
+            onResetSettings={resetAllSettings}
+            canResetSettings={canResetSettings}
             onGenerate={startGeneration}
           />
         )}
@@ -211,6 +481,14 @@ export default function HomeScreen() {
         onClose={() => setShowModal(false)}
         onLike={toggleLike}
       />
+      <SettingPickerModal
+        target={settingPickerTarget}
+        visible={Boolean(settingPickerTarget)}
+        current={settingPickerTarget ? selections[settingPickerTarget] : null}
+        onClose={() => setSettingPickerTarget(null)}
+        onSelect={selectSettingOption}
+        onClear={clearSettingOption}
+      />
     </ScreenBackground>
   );
 }
@@ -223,6 +501,86 @@ const SYNC_STEPS = [
   { label: "음악 취향 분석", done: true },
   { label: "플레이리스트 준비", done: false },
 ];
+
+function SettingPickerModal({
+  visible,
+  target,
+  current,
+  onClose,
+  onSelect,
+  onClear,
+}: {
+  visible: boolean;
+  target: SettingId | null;
+  current: SettingOption | null;
+  onClose: () => void;
+  onSelect: (id: SettingId, option: SettingOption) => void;
+  onClear: (id: SettingId) => void;
+}) {
+  if (!target) return null;
+  const meta = GENRE_TOGGLES.find(v => v.id === target);
+  const options = SETTING_OPTIONS[target];
+
+  return (
+    <Modal
+      visible={visible}
+      transparent
+      animationType="fade"
+      onRequestClose={onClose}
+    >
+      <Pressable style={styles.settingModalBackdrop} onPress={onClose} />
+      <View style={styles.settingModalSheet}>
+        <Text style={styles.settingModalTitle}>
+          {meta?.label ?? "설정 선택"}
+        </Text>
+        <Text style={styles.settingModalSub}>{meta?.desc}</Text>
+
+        <View style={styles.settingOptionList}>
+          {options.map(option => {
+            const selected = current?.label === option.label;
+            return (
+              <TouchableOpacity
+                key={option.label}
+                style={[
+                  styles.settingOptionItem,
+                  selected && styles.settingOptionItemSelected,
+                ]}
+                onPress={() => onSelect(target, option)}
+                activeOpacity={0.8}
+              >
+                <Text
+                  style={[
+                    styles.settingOptionLabel,
+                    selected && styles.settingOptionLabelSelected,
+                  ]}
+                >
+                  {option.label}
+                </Text>
+              </TouchableOpacity>
+            );
+          })}
+        </View>
+
+        <View style={styles.settingModalActions}>
+          <TouchableOpacity
+            style={styles.settingActionGhost}
+            onPress={() => onClear(target)}
+            activeOpacity={0.8}
+          >
+            <Text style={styles.settingActionGhostText}>선택 해제</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.settingActionPrimary}
+            onPress={onClose}
+            activeOpacity={0.85}
+          >
+            <Text style={styles.settingActionPrimaryText}>확인</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+    </Modal>
+  );
+}
 
 function SyncingView({ insets, userFirstName }: any) {
   const progressAnim = useRef(new Animated.Value(0)).current;
@@ -244,11 +602,11 @@ function SyncingView({ insets, userFirstName }: any) {
     <View style={[styles.centered, { paddingTop: insets.top }]}>
       {/* 헤더 로고 */}
       <View style={styles.syncHeader}>
-          <LogoIcon size={56} radius={16} animated />
-          <View>
+        <LogoIcon size={56} radius={16} animated />
+        <View>
           <Text style={styles.syncTitle}>안녕하세요, {userFirstName}님!</Text>
           <Text style={styles.syncSub}>데이터를 동기화하고 있어요</Text>
-          </View>
+        </View>
       </View>
 
       {/* 웨이브폼 */}
@@ -304,10 +662,33 @@ function HomeInputView({
   userFirstName,
   moodText,
   setMoodText,
-  activeToggles,
-  onToggle,
+  moodSuggestions,
+  onRefreshMoods,
+  onResetInput,
+  canResetInput,
+  canGenerate,
+  finalPrompt,
+  selections,
+  onOpenSetting,
+  onResetSettings,
+  canResetSettings,
   onGenerate,
 }: any) {
+  const [isKeyboardVisible, setIsKeyboardVisible] = useState(false);
+
+  useEffect(() => {
+    const showSub = Keyboard.addListener("keyboardDidShow", () =>
+      setIsKeyboardVisible(true),
+    );
+    const hideSub = Keyboard.addListener("keyboardDidHide", () =>
+      setIsKeyboardVisible(false),
+    );
+    return () => {
+      showSub.remove();
+      hideSub.remove();
+    };
+  }, []);
+
   return (
     <KeyboardAvoidingView
       style={{ flex: 1 }}
@@ -332,19 +713,52 @@ function HomeInputView({
         style={{ flex: 1 }}
         contentContainerStyle={[
           styles.homeBody,
-          { paddingBottom: insets.bottom + 90 },
+          { paddingBottom: insets.bottom + HOME_SCROLL_BOTTOM_SPACER },
         ]}
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
       >
         {/* 인사말 */}
-        <Text style={styles.greetTitle}>
-          안녕하세요 {userFirstName}님 👋
-        </Text>
+        <View style={styles.greetRow}>
+          <Text style={styles.greetTitle}>안녕하세요 {userFirstName}님</Text>
+          <View style={styles.greetIconWrap}>
+            <Hand size={16} color={Colors.greenL} strokeWidth={2.2} />
+          </View>
+        </View>
         <Text style={styles.greetSub}>오늘 어떤 기분인가요?</Text>
 
         {/* 무드 텍스트 입력 */}
         <View style={styles.inputWrapper}>
+          <View style={styles.inputHeaderRow}>
+            <Text style={styles.inputHeaderTitle}>사용자 입력</Text>
+            <TouchableOpacity
+              style={[
+                styles.inlineResetBtn,
+                canResetInput
+                  ? styles.inlineResetBtnActive
+                  : styles.inlineResetBtnDisabled,
+              ]}
+              onPress={onResetInput}
+              disabled={!canResetInput}
+              activeOpacity={0.75}
+            >
+              <RefreshCw
+                size={13}
+                color={canResetInput ? Colors.greenL : Colors.t3}
+                strokeWidth={2.2}
+              />
+              <Text
+                style={[
+                  styles.inlineResetText,
+                  canResetInput
+                    ? styles.inlineResetTextActive
+                    : styles.inlineResetTextDisabled,
+                ]}
+              >
+                리셋
+              </Text>
+            </TouchableOpacity>
+          </View>
           <TextInput
             style={styles.moodInput}
             value={moodText}
@@ -357,58 +771,136 @@ function HomeInputView({
           />
           <Text style={styles.charCount}>{moodText.length}/200</Text>
         </View>
+        <View style={styles.promptPreviewCard}>
+          <View style={styles.promptPreviewGlow} />
+          <View style={styles.promptPreviewHeader}>
+            <View style={styles.promptPreviewTitleWrap}>
+              <Sparkles size={14} color={Colors.greenL} strokeWidth={2.2} />
+              <Text style={styles.promptPreviewTitle}>생성될 프롬프트</Text>
+            </View>
+            <View style={styles.promptPreviewBadge}>
+              <Text style={styles.promptPreviewBadgeText}>AI READY</Text>
+            </View>
+          </View>
+          <Text style={styles.promptPreviewText}>
+            {finalPrompt || "입력 후 생성 가능합니다."}
+          </Text>
+        </View>
 
         {/* 무드 추천 알약 */}
-        <Text style={styles.sectionLabel}>추천 무드</Text>
+        <View style={styles.sectionHeaderRow}>
+          <Text style={styles.sectionLabel}>추천 무드</Text>
+          <TouchableOpacity
+            style={styles.moodRefreshBtn}
+            onPress={onRefreshMoods}
+            activeOpacity={0.75}
+          >
+            <RefreshCw size={14} color={Colors.greenL} strokeWidth={2.2} />
+            <Text style={styles.moodRefreshText}>새로고침</Text>
+          </TouchableOpacity>
+        </View>
         <View style={styles.pillsGrid}>
-          {MOOD_PILLS.map(p => (
+          {moodSuggestions.map((p: MoodSuggestionItem) => (
             <TouchableOpacity
               key={p.id}
               style={styles.moodPill}
               onPress={() => setMoodText(p.text)}
               activeOpacity={0.75}
             >
+              <View style={styles.moodPillIconWrap}>
+                <p.Icon size={14} color={Colors.greenL} strokeWidth={2.2} />
+              </View>
               <Text style={styles.moodPillText}>{p.label}</Text>
             </TouchableOpacity>
           ))}
         </View>
 
         {/* 옵션 토글 */}
-        <Text style={styles.sectionLabel}>설정</Text>
+        <View style={styles.sectionHeaderRow}>
+          <Text style={styles.sectionLabel}>설정</Text>
+          <TouchableOpacity
+            style={[
+              styles.inlineResetBtn,
+              canResetSettings
+                ? styles.inlineResetBtnActive
+                : styles.inlineResetBtnDisabled,
+            ]}
+            onPress={onResetSettings}
+            disabled={!canResetSettings}
+            activeOpacity={0.75}
+          >
+            <RefreshCw
+              size={13}
+              color={canResetSettings ? Colors.greenL : Colors.t3}
+              strokeWidth={2.2}
+            />
+            <Text
+              style={[
+                styles.inlineResetText,
+                canResetSettings
+                  ? styles.inlineResetTextActive
+                  : styles.inlineResetTextDisabled,
+              ]}
+            >
+              설정 리셋
+            </Text>
+          </TouchableOpacity>
+        </View>
         <View style={styles.toggleGrid}>
           {GENRE_TOGGLES.map(g => (
             <TouchableOpacity
               key={g.id}
-              style={[
-                styles.toggle,
-                activeToggles.has(g.id) && styles.toggleActive,
-              ]}
-              onPress={() => onToggle(g.id)}
+              style={[styles.toggle, selections[g.id] && styles.toggleActive]}
+              onPress={() => onOpenSetting(g.id)}
               activeOpacity={0.75}
             >
-              <Text style={styles.toggleIcon}>{g.icon}</Text>
-              <Text
-                style={[
-                  styles.toggleLabel,
-                  activeToggles.has(g.id) && styles.toggleLabelActive,
-                ]}
-              >
-                {g.label}
-              </Text>
+              <View style={styles.toggleIconWrap}>
+                <g.Icon
+                  size={16}
+                  color={selections[g.id] ? Colors.green : Colors.t2}
+                  strokeWidth={2.1}
+                />
+              </View>
+              <View style={styles.toggleTextWrap}>
+                <Text
+                  style={[
+                    styles.toggleLabel,
+                    selections[g.id] && styles.toggleLabelActive,
+                  ]}
+                >
+                  {g.label}
+                </Text>
+                <Text
+                  style={[
+                    styles.toggleSubLabel,
+                    selections[g.id] && styles.toggleSubLabelActive,
+                  ]}
+                >
+                  {selections[g.id]?.label ?? g.desc}
+                </Text>
+              </View>
             </TouchableOpacity>
           ))}
         </View>
+
       </ScrollView>
 
       {/* CTA 버튼 */}
-      <View style={[styles.ctaBar, { paddingBottom: insets.bottom + 90 }]}>
-        <PrimaryButton
-          label="✨  플레이리스트 생성하기"
-          onPress={onGenerate}
-          disabled={!moodText.trim()}
-          style={{ width: "100%" }}
-        />
-      </View>
+      {!isKeyboardVisible ? (
+        <View
+          style={[
+            styles.ctaBar,
+            { paddingBottom: insets.bottom + HOME_CTA_BOTTOM_OFFSET },
+          ]}
+        >
+          <PrimaryButton
+            label="플레이리스트 생성하기"
+            onPress={onGenerate}
+            disabled={!canGenerate}
+            style={{ width: "100%" }}
+          />
+        </View>
+      ) : null}
     </KeyboardAvoidingView>
   );
 }
@@ -590,7 +1082,7 @@ function PreviewView({
       {/* 하단 저장 바 */}
       <View style={[styles.pvBar, { paddingBottom: insets.bottom + 16 }]}>
         <GlassCard style={styles.pvBarInfo} padding={10}>
-          <Text style={{ fontSize: FontSize.sm, color: Colors.t2 }}>🎵</Text>
+          <Music2 size={14} color={Colors.t2} strokeWidth={2.1} />
           <Text
             style={{
               fontSize: FontSize.sm,
@@ -601,16 +1093,19 @@ function PreviewView({
             {totalTracks}곡
           </Text>
           <View style={styles.pvBarSep} />
-          <Text style={{ fontSize: FontSize.sm, color: Colors.t2 }}>
-            ⏱ {Math.round(totalMins)}분
-          </Text>
+          <View style={styles.pvMetaRow}>
+            <Timer size={13} color={Colors.t2} strokeWidth={2.1} />
+            <Text style={{ fontSize: FontSize.sm, color: Colors.t2 }}>
+              {Math.round(totalMins)}분
+            </Text>
+          </View>
           <View style={styles.pvBarSep} />
           <Text style={{ fontSize: FontSize.xs, color: Colors.t3 }}>
             ← 밀어서 삭제
           </Text>
         </GlassCard>
         <PrimaryButton
-          label="💚 Spotify에 저장하기"
+          label="Spotify에 저장하기"
           onPress={onSave}
           style={{ flex: 1 }}
           fontSize={14}
@@ -739,7 +1234,22 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     color: Colors.t1,
     letterSpacing: -0.3,
+  },
+  greetRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
     marginBottom: 4,
+  },
+  greetIconWrap: {
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(61,220,132,0.12)",
+    borderWidth: 1,
+    borderColor: "rgba(61,220,132,0.3)",
   },
   greetSub: {
     fontSize: FontSize.md,
@@ -754,6 +1264,19 @@ const styles = StyleSheet.create({
     padding: 16,
     marginBottom: 18,
     minHeight: 120,
+  },
+  inputHeaderRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: 8,
+  },
+  inputHeaderTitle: {
+    fontSize: FontSize.xs,
+    color: Colors.t3,
+    fontWeight: "700",
+    letterSpacing: 0.4,
+    textTransform: "uppercase",
   },
   moodInput: {
     color: Colors.t1,
@@ -773,7 +1296,29 @@ const styles = StyleSheet.create({
     fontWeight: "600",
     textTransform: "uppercase",
     letterSpacing: 0.6,
-    marginBottom: 9,
+    marginBottom: 8,
+  },
+  sectionHeaderRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  moodRefreshBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "rgba(61,220,132,0.30)",
+    backgroundColor: "rgba(61,220,132,0.10)",
+    marginBottom: 8,
+  },
+  moodRefreshText: {
+    fontSize: FontSize.xs,
+    color: Colors.greenL,
+    fontWeight: "700",
   },
   pillsGrid: {
     flexDirection: "row",
@@ -782,27 +1327,39 @@ const styles = StyleSheet.create({
     marginBottom: 20,
   },
   moodPill: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
     paddingHorizontal: 12,
     paddingVertical: 7,
-    backgroundColor: "rgba(255,255,255,0.06)",
+    backgroundColor: "rgba(12,26,20,0.72)",
     borderRadius: 20,
     borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.10)",
+    borderColor: "rgba(61,220,132,0.25)",
+  },
+  moodPillIconWrap: {
+    width: 18,
+    height: 18,
+    borderRadius: 9,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(61,220,132,0.14)",
   },
   moodPillText: {
     fontSize: FontSize.sm,
-    color: Colors.t2,
+    color: "rgba(225,255,239,0.92)",
+    fontWeight: "600",
   },
   toggleGrid: {
     flexDirection: "row",
     flexWrap: "wrap",
     gap: 7,
-    marginBottom: 24,
+    marginBottom: 16,
   },
   toggle: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 6,
+    gap: 8,
     paddingHorizontal: 12,
     paddingVertical: 10,
     backgroundColor: Colors.glass,
@@ -815,17 +1372,126 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(61,220,132,0.12)",
     borderColor: Colors.green,
   },
-  toggleIcon: {
-    fontSize: 16,
+  toggleIconWrap: {
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(255,255,255,0.06)",
+    flexShrink: 0,
+  },
+  toggleTextWrap: {
+    flex: 1,
   },
   toggleLabel: {
     fontSize: FontSize.base,
     color: Colors.t2,
-    fontWeight: "500",
+    fontWeight: "600",
   },
   toggleLabelActive: {
     color: Colors.green,
-    fontWeight: "600",
+    fontWeight: "700",
+  },
+  toggleSubLabel: {
+    fontSize: FontSize.xs,
+    color: Colors.t3,
+    lineHeight: 16,
+    marginTop: -1,
+  },
+  toggleSubLabelActive: {
+    color: "rgba(190,255,220,0.88)",
+  },
+  promptPreviewCard: {
+    borderRadius: 14,
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+    borderWidth: 1,
+    borderColor: "rgba(61,220,132,0.34)",
+    backgroundColor: "rgba(10,26,18,0.78)",
+    marginBottom: 18,
+    overflow: "hidden",
+    shadowColor: Colors.green,
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.16,
+    shadowRadius: 18,
+    elevation: 4,
+  },
+  promptPreviewGlow: {
+    position: "absolute",
+    top: -42,
+    right: -36,
+    width: 130,
+    height: 130,
+    borderRadius: 65,
+    backgroundColor: "rgba(61,220,132,0.16)",
+  },
+  promptPreviewHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: 8,
+  },
+  promptPreviewTitleWrap: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+  },
+  promptPreviewTitle: {
+    fontSize: FontSize.xs,
+    color: Colors.greenL,
+    fontWeight: "800",
+    letterSpacing: 0.4,
+    textTransform: "uppercase",
+  },
+  promptPreviewBadge: {
+    borderRadius: 999,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    backgroundColor: "rgba(61,220,132,0.14)",
+    borderWidth: 1,
+    borderColor: "rgba(61,220,132,0.36)",
+  },
+  promptPreviewBadgeText: {
+    fontSize: 10,
+    letterSpacing: 0.5,
+    color: "rgba(190,255,220,0.95)",
+    fontWeight: "800",
+  },
+  promptPreviewText: {
+    fontSize: FontSize.sm,
+    lineHeight: 21,
+    color: "rgba(240,255,247,0.92)",
+  },
+  inlineResetBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.14)",
+    backgroundColor: "rgba(255,255,255,0.04)",
+    marginBottom: 8,
+  },
+  inlineResetBtnActive: {
+    borderColor: "rgba(61,220,132,0.30)",
+    backgroundColor: "rgba(61,220,132,0.10)",
+  },
+  inlineResetBtnDisabled: {
+    borderColor: "rgba(255,255,255,0.12)",
+    backgroundColor: "rgba(255,255,255,0.03)",
+  },
+  inlineResetText: {
+    fontSize: FontSize.xs,
+    fontWeight: "700",
+  },
+  inlineResetTextActive: {
+    color: Colors.greenL,
+  },
+  inlineResetTextDisabled: {
+    color: Colors.t3,
   },
   ctaBar: {
     position: "absolute",
@@ -834,9 +1500,91 @@ const styles = StyleSheet.create({
     right: 0,
     paddingHorizontal: 24,
     paddingTop: 12,
-    backgroundColor: "rgba(6,13,10,0.95)",
-    borderTopWidth: 1,
-    borderTopColor: Colors.glassBd,
+    backgroundColor: "transparent",
+    borderTopWidth: 0,
+  },
+  settingModalBackdrop: {
+    position: "absolute",
+    inset: 0,
+    backgroundColor: "rgba(0,0,0,0.42)",
+  },
+  settingModalSheet: {
+    position: "absolute",
+    left: 16,
+    right: 16,
+    bottom: 24,
+    borderRadius: 20,
+    padding: 16,
+    backgroundColor: "rgba(8,19,14,0.97)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.12)",
+  },
+  settingModalTitle: {
+    fontSize: FontSize["2xl"],
+    fontWeight: "800",
+    color: Colors.t1,
+  },
+  settingModalSub: {
+    marginTop: 4,
+    marginBottom: 12,
+    fontSize: FontSize.sm,
+    color: Colors.t2,
+  },
+  settingOptionList: {
+    gap: 8,
+  },
+  settingOptionItem: {
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.12)",
+    backgroundColor: "rgba(255,255,255,0.04)",
+    paddingVertical: 11,
+    paddingHorizontal: 12,
+  },
+  settingOptionItemSelected: {
+    borderColor: "rgba(61,220,132,0.62)",
+    backgroundColor: "rgba(61,220,132,0.14)",
+  },
+  settingOptionLabel: {
+    fontSize: FontSize.base,
+    color: Colors.t2,
+    fontWeight: "600",
+  },
+  settingOptionLabelSelected: {
+    color: Colors.greenL,
+  },
+  settingModalActions: {
+    marginTop: 14,
+    flexDirection: "row",
+    gap: 8,
+  },
+  settingActionGhost: {
+    flex: 1,
+    borderRadius: 12,
+    paddingVertical: 11,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.14)",
+    backgroundColor: "rgba(255,255,255,0.04)",
+    alignItems: "center",
+  },
+  settingActionGhostText: {
+    fontSize: FontSize.sm,
+    color: Colors.t2,
+    fontWeight: "700",
+  },
+  settingActionPrimary: {
+    flex: 1,
+    borderRadius: 12,
+    paddingVertical: 11,
+    alignItems: "center",
+    backgroundColor: "rgba(61,220,132,0.18)",
+    borderWidth: 1,
+    borderColor: "rgba(61,220,132,0.55)",
+  },
+  settingActionPrimaryText: {
+    fontSize: FontSize.sm,
+    color: Colors.greenL,
+    fontWeight: "800",
   },
 
   // ── Loading ───────────────────────────────────────────
@@ -932,6 +1680,11 @@ const styles = StyleSheet.create({
     gap: 8,
     flex: 1,
     borderRadius: Radius.md,
+  },
+  pvMetaRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
   },
   pvBarSep: {
     width: 1,
