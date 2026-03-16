@@ -59,13 +59,16 @@ export default function RootLayout() {
       <SafeAreaProvider>
         <StatusBar style="light" />
         <Stack
-          initialRouteName="auth/login"
+          initialRouteName="index"
           screenOptions={{ headerShown: false, animation: "fade" }}
         >
+          <Stack.Screen name="index" options={{ animation: "none" }} />
           <Stack.Screen name="auth/login" options={{ animation: "none" }} />
           <Stack.Screen name="auth/spotify" options={{ animation: "slide_from_right" }} />
+          <Stack.Screen name="auth/spotify-linking" options={{ animation: "none" }} />
           <Stack.Screen name="expo-auth-session/[...segments]" options={{ animation: "none" }} />
           <Stack.Screen name="(tabs)" options={{ animation: "none" }} />
+          <Stack.Screen name="playlist/[id]" options={{ animation: "slide_from_right" }} />
           <Stack.Screen
             name="result/[id]"
             options={{ animation: "slide_from_right" }}

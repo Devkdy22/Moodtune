@@ -19,6 +19,7 @@ interface UserSlice {
   spotifyUser:     SpotifyUser | null;
   spotifyBootstrap: SpotifyBootstrapData | null;
   playlists:       Playlist[];
+  playlistsByUser: Record<string, Playlist[]>;
   isAuthenticated: boolean;
 
   setTokens:       (tokens: SpotifyTokens) => void;
@@ -54,24 +55,60 @@ export const useAppStore = create<AppStore>()(
       spotifyUser:     null,
       spotifyBootstrap: null,
       playlists:       [],
+      playlistsByUser: {},
       isAuthenticated: false,
 
       setTokens: (tokens) => set({ spotifyTokens: tokens, isAuthenticated: true }),
 
-      setSpotifyUser: (user) => set({ spotifyUser: user }),
+      setSpotifyUser: (user) =>
+        set((s) => ({
+          spotifyUser: user,
+          playlists: s.playlistsByUser[user.id] ?? [],
+        })),
       setSpotifyBootstrap: (data) => set({ spotifyBootstrap: data }),
 
       addPlaylist: (pl) =>
-        set((s) => ({ playlists: [pl, ...s.playlists] })),
+        set((s) => ({
+          playlists: [pl, ...s.playlists.filter((p) => p.id !== pl.id)],
+          playlistsByUser: s.spotifyUser?.id
+            ? {
+                ...s.playlistsByUser,
+                [s.spotifyUser.id]: [
+                  pl,
+                  ...(s.playlistsByUser[s.spotifyUser.id] ?? []).filter(
+                    p => p.id !== pl.id,
+                  ),
+                ],
+              }
+            : s.playlistsByUser,
+        })),
 
       removePlaylist: (id) =>
-        set((s) => ({ playlists: s.playlists.filter((p) => p.id !== id) })),
+        set((s) => ({
+          playlists: s.playlists.filter((p) => p.id !== id),
+          playlistsByUser: s.spotifyUser?.id
+            ? {
+                ...s.playlistsByUser,
+                [s.spotifyUser.id]: (s.playlistsByUser[s.spotifyUser.id] ?? []).filter(
+                  p => p.id !== id,
+                ),
+              }
+            : s.playlistsByUser,
+        })),
 
       toggleLike: (id) =>
         set((s) => ({
           playlists: s.playlists.map((p) =>
             p.id === id ? { ...p, liked: !p.liked } : p
           ),
+          playlistsByUser: s.spotifyUser?.id
+            ? {
+                ...s.playlistsByUser,
+                [s.spotifyUser.id]: (s.playlistsByUser[s.spotifyUser.id] ?? []).map(
+                  p => (p.id === id ? { ...p, liked: !p.liked } : p),
+                ),
+              }
+            : s.playlistsByUser,
         })),
 
       logout: () =>
@@ -98,7 +135,7 @@ export const useAppStore = create<AppStore>()(
     }),
     {
       name:    'moodtune-store',
-      version: 2,
+      version: 3,
       storage: createJSONStorage(() => AsyncStorage),
       migrate: (persistedState: any, version) => {
         if (!persistedState) return persistedState;
@@ -107,6 +144,16 @@ export const useAppStore = create<AppStore>()(
             ...persistedState,
             playlists: [],
             spotifyBootstrap: null,
+          };
+        }
+        if (version < 3) {
+          const userId = persistedState.spotifyUser?.id;
+          const oldPlaylists = Array.isArray(persistedState.playlists)
+            ? persistedState.playlists
+            : [];
+          return {
+            ...persistedState,
+            playlistsByUser: userId ? { [userId]: oldPlaylists } : {},
           };
         }
         return persistedState;
@@ -118,6 +165,7 @@ export const useAppStore = create<AppStore>()(
         spotifyBootstrap: state.spotifyBootstrap,
         isAuthenticated: state.isAuthenticated,
         playlists:       state.playlists,
+        playlistsByUser: state.playlistsByUser,
       }),
     }
   )

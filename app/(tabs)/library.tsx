@@ -4,8 +4,10 @@
 // ─────────────────────────────────────────────────────────
 import { router } from "expo-router";
 import { Music4 } from "lucide-react-native";
-import React, { useState } from "react";
+import { useFocusEffect } from "@react-navigation/native";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
+  Alert,
   FlatList,
   StatusBar,
   StyleSheet,
@@ -19,25 +21,224 @@ import ScreenBackground from "../../src/components/common/ScreenBackground";
 import PlaylistCard from "../../src/components/music/PlaylistCard";
 import { Colors } from "../../src/constants/colors";
 import { FontSize } from "../../src/constants/layout";
+import {
+  getMoodtuneCreatedPlaylists,
+  removeSpotifyPlaylist,
+  refreshSpotifyAccessToken,
+} from "../../src/api/spotify.service";
 import { useAppStore } from "../../src/store/useAppStore";
+import { Playlist } from "../../src/types";
 
 const FILTER_TABS = ["전체", "최근", "좋아요"];
+
+function estimateDurationLabel(trackCount: number): string {
+  const min = Math.max(12, trackCount * 4);
+  if (min >= 60) {
+    const h = Math.floor(min / 60);
+    const m = min % 60;
+    return m ? `${h}시간 ${m}분` : `${h}시간`;
+  }
+  return `${min}분`;
+}
 
 export default function LibraryScreen() {
   const insets = useSafeAreaInsets();
   const playlists = useAppStore(s => s.playlists);
+  const spotifyTokens = useAppStore(s => s.spotifyTokens);
+  const setTokens = useAppStore(s => s.setTokens);
   const spotifyUser = useAppStore(s => s.spotifyUser);
+  const setCurrentPlaylist = useAppStore(s => s.setCurrentPlaylist);
   const toggleLike = useAppStore(s => s.toggleLike);
+  const removePlaylist = useAppStore(s => s.removePlaylist);
+  const [remotePlaylists, setRemotePlaylists] = useState<Playlist[]>([]);
   const [activeFilter, setActiveFilter] = useState("전체");
+  const [selectionMode, setSelectionMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [reloadTick, setReloadTick] = useState(0);
   const userName = spotifyUser?.display_name || "사용자";
 
-  const filtered = playlists.filter(p => {
+  useFocusEffect(
+    useCallback(() => {
+      setReloadTick(v => v + 1);
+    }, []),
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+    async function loadRemote() {
+      if (!spotifyTokens?.accessToken) {
+        if (!cancelled) setRemotePlaylists([]);
+        return;
+      }
+
+      const mapToPlaylist = (p: any, i: number): Playlist => ({
+        id: `remote_${p.id}`,
+        spotifyId: p.id,
+        ownerId: p.owner_id || undefined,
+        spotifyUrl: p.external_url || undefined,
+        name: p.name || `Moodtune Playlist ${i + 1}`,
+        coverEmoji: "🎵",
+        coverImageUrl: p.images?.[0]?.url || undefined,
+        gradientStart: "#1a2535",
+        gradientEnd: "#0e1822",
+        trackCount: Number(p.tracks?.total ?? 0),
+        duration: estimateDurationLabel(Number(p.tracks?.total ?? 0)),
+        liked: false,
+        tracks: [],
+        createdAt: new Date(),
+        moodInput: "",
+      });
+
+      const loadWithAccessToken = async (accessToken: string) => {
+        const list = await getMoodtuneCreatedPlaylists(accessToken);
+        const ownedList = spotifyUser?.id
+          ? list.filter(p => p.owner_id === spotifyUser.id)
+          : list;
+        if (cancelled) return;
+        setRemotePlaylists(ownedList.map(mapToPlaylist));
+      };
+
+      try {
+        await loadWithAccessToken(spotifyTokens.accessToken);
+      } catch (err) {
+        const msg = String((err as Error)?.message ?? err);
+        if (msg.includes("(401)") && spotifyTokens?.refreshToken) {
+          try {
+            const refreshed = await refreshSpotifyAccessToken({
+              refreshToken: spotifyTokens.refreshToken,
+            });
+            if (cancelled) return;
+            setTokens(refreshed);
+            await loadWithAccessToken(refreshed.accessToken);
+            return;
+          } catch (refreshErr) {
+            console.warn("[library] remote load retry after refresh failed:", refreshErr);
+          }
+        }
+        console.warn("[library] remote moodtune playlists load failed:", err);
+      }
+    }
+    loadRemote();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    reloadTick,
+    setTokens,
+    spotifyTokens?.accessToken,
+    spotifyTokens?.refreshToken,
+    spotifyUser?.id,
+  ]);
+
+  const mergedPlaylists = useMemo(() => remotePlaylists, [remotePlaylists]);
+
+  const filtered = mergedPlaylists.filter(p => {
     if (activeFilter === "좋아요") return p.liked;
     return true;
   });
+  const deduped = Array.from(
+    new Map(filtered.map(p => [p.id, p])).values(),
+  );
+  const allSelected = deduped.length > 0 && selectedIds.length === deduped.length;
 
   function openPlaylist(id: string) {
-    router.push(`/result/${encodeURIComponent(id)}` as any);
+    const item = deduped.find(p => p.id === id);
+    if (!item) {
+      router.push(`/playlist/${encodeURIComponent(id)}` as any);
+      return;
+    }
+    setCurrentPlaylist(item);
+    router.push({
+      pathname: "/playlist/[id]",
+      params: {
+        id: item.id,
+        spotifyId: item.spotifyId ?? "",
+        ownerId: item.ownerId ?? "",
+        name: item.name ?? "",
+        duration: item.duration ?? "",
+        trackCount: String(item.trackCount ?? 0),
+        coverImageUrl: item.coverImageUrl ?? "",
+      },
+    } as any);
+  }
+
+  function deletePlaylist(id: string) {
+    const item = deduped.find(p => p.id === id);
+    if (!item) return;
+    Alert.alert("플레이리스트 삭제", "이 플레이리스트를 라이브러리에서 삭제할까요?", [
+      { text: "취소", style: "cancel" },
+      {
+        text: "삭제",
+        style: "destructive",
+        onPress: async () => {
+          try {
+            if (item.spotifyId && spotifyTokens?.accessToken) {
+              await removeSpotifyPlaylist(spotifyTokens.accessToken, item.spotifyId);
+            }
+          } catch (err) {
+            console.warn("[library] spotify playlist remove failed:", err);
+          } finally {
+            removePlaylist(id);
+            const localMatch = playlists.find(p => p.spotifyId === item.spotifyId);
+            if (localMatch) removePlaylist(localMatch.id);
+            setRemotePlaylists(prev => prev.filter(p => p.id !== id));
+          }
+        },
+      },
+    ]);
+  }
+
+  function toggleSelect(id: string) {
+    setSelectedIds(prev =>
+      prev.includes(id) ? prev.filter(v => v !== id) : [...prev, id],
+    );
+  }
+
+  function toggleSelectAll() {
+    if (allSelected) {
+      setSelectedIds([]);
+      return;
+    }
+    setSelectedIds(deduped.map(p => p.id));
+  }
+
+  function toggleSelectionMode() {
+    setSelectionMode(v => !v);
+    setSelectedIds([]);
+  }
+
+  function deleteSelected() {
+    if (!selectedIds.length) return;
+    const targets = deduped.filter(p => selectedIds.includes(p.id));
+    Alert.alert(
+      "선택 삭제",
+      `${targets.length}개의 플레이리스트를 삭제할까요?`,
+      [
+        { text: "취소", style: "cancel" },
+        {
+          text: "삭제",
+          style: "destructive",
+          onPress: async () => {
+            for (const item of targets) {
+              try {
+                if (item.spotifyId && spotifyTokens?.accessToken) {
+                  await removeSpotifyPlaylist(spotifyTokens.accessToken, item.spotifyId);
+                }
+              } catch (err) {
+                console.warn("[library] bulk spotify remove failed:", err);
+              } finally {
+                removePlaylist(item.id);
+                const localMatch = playlists.find(p => p.spotifyId === item.spotifyId);
+                if (localMatch) removePlaylist(localMatch.id);
+                setRemotePlaylists(prev => prev.filter(p => p.id !== item.id));
+              }
+            }
+            setSelectedIds([]);
+            setSelectionMode(false);
+          },
+        },
+      ],
+    );
   }
 
   function goCreatePlaylist() {
@@ -53,7 +254,7 @@ export default function LibraryScreen() {
           <View>
             <Text style={styles.headerTitle}>내 라이브러리</Text>
             <Text style={styles.headerSub}>
-              {userName}님을 위한 플레이리스트 {playlists.length}개
+              {userName}님을 위한 플레이리스트 {mergedPlaylists.length}개
             </Text>
           </View>
           <TouchableOpacity
@@ -87,6 +288,45 @@ export default function LibraryScreen() {
             </TouchableOpacity>
           ))}
         </View>
+        <View style={styles.bulkRow}>
+          <TouchableOpacity
+            style={styles.bulkBtn}
+            onPress={toggleSelectionMode}
+            activeOpacity={0.8}
+          >
+            <Text style={styles.bulkBtnText}>
+              {selectionMode ? "선택 모드 종료" : "플리 선택"}
+            </Text>
+          </TouchableOpacity>
+          {selectionMode ? (
+            <>
+              <TouchableOpacity
+                style={styles.bulkBtn}
+                onPress={toggleSelectAll}
+                activeOpacity={0.8}
+              >
+                <Text style={styles.bulkBtnText}>
+                  {allSelected ? "전체 해제" : "전체 선택"}
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.bulkBtn, styles.bulkDeleteBtn]}
+                onPress={deleteSelected}
+                activeOpacity={0.8}
+                disabled={!selectedIds.length}
+              >
+                <Text
+                  style={[
+                    styles.bulkDeleteText,
+                    !selectedIds.length && { opacity: 0.5 },
+                  ]}
+                >
+                  선택 삭제
+                </Text>
+              </TouchableOpacity>
+            </>
+          ) : null}
+        </View>
 
         {/* 플레이리스트 목록 */}
         {filtered.length === 0 ? (
@@ -106,13 +346,17 @@ export default function LibraryScreen() {
           </View>
         ) : (
           <FlatList
-            data={filtered}
-            keyExtractor={item => item.id}
+            data={deduped}
+            keyExtractor={(item, index) => `${item.id}-${index}`}
             renderItem={({ item }) => (
               <PlaylistCard
                 playlist={item}
-                onPress={openPlaylist}
+                onPress={selectionMode ? (() => {}) : openPlaylist}
                 onLike={toggleLike}
+                onDelete={deletePlaylist}
+                selectable={selectionMode}
+                selected={selectedIds.includes(item.id)}
+                onToggleSelect={toggleSelect}
               />
             )}
             contentContainerStyle={[
@@ -186,6 +430,35 @@ const styles = StyleSheet.create({
   },
   filterTabTextActive: {
     color: Colors.green,
+    fontWeight: "700",
+  },
+  bulkRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    paddingHorizontal: 24,
+    gap: 8,
+    marginBottom: 10,
+  },
+  bulkBtn: {
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.15)",
+    backgroundColor: "rgba(255,255,255,0.05)",
+  },
+  bulkBtnText: {
+    color: Colors.t1,
+    fontSize: FontSize.sm,
+    fontWeight: "600",
+  },
+  bulkDeleteBtn: {
+    borderColor: "rgba(255,80,80,0.32)",
+    backgroundColor: "rgba(255,80,80,0.12)",
+  },
+  bulkDeleteText: {
+    color: "rgba(255,145,145,0.96)",
+    fontSize: FontSize.sm,
     fontWeight: "700",
   },
 

@@ -30,6 +30,7 @@ import {
 } from "lucide-react-native";
 import React, { useEffect, useRef, useState } from "react";
 import {
+  Alert,
   Animated,
   Dimensions,
   Keyboard,
@@ -46,6 +47,11 @@ import {
   View,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { analyzeMoodAndRecommend } from "../../src/api/gemini.service";
+import {
+  refreshSpotifyAccessToken,
+  savePlaylistToSpotify,
+} from "../../src/api/spotify.service";
 import Waveform from "../../src/components/ai/waveform";
 import { PrimaryButton } from "../../src/components/common/Button";
 import GlassCard from "../../src/components/common/GlassCard";
@@ -62,6 +68,7 @@ import { Track } from "../../src/types";
 const { width: W } = Dimensions.get("window");
 const HOME_SCROLL_BOTTOM_SPACER = Platform.OS === "ios" ? 188 : 198;
 const HOME_CTA_BOTTOM_OFFSET = Platform.OS === "ios" ? 92 : 98;
+const PREVIEW_BAR_BOTTOM_OFFSET = Platform.OS === "ios" ? 94 : 86;
 
 const GENRE_TOGGLES = [
   {
@@ -255,11 +262,29 @@ function composePrompt(baseText: string, selections: SettingSelection): string {
   return `${base}\n\n추가 요청: ${selectedPrompts.join(" 그리고 ")}.`;
 }
 
+function formatDurationMs(durationMs: number): string {
+  if (!durationMs || durationMs < 0) return "0:00";
+  const totalSec = Math.floor(durationMs / 1000);
+  const min = Math.floor(totalSec / 60);
+  const sec = totalSec % 60;
+  return `${min}:${String(sec).padStart(2, "0")}`;
+}
+
+function parseReleaseYear(releaseDate?: string): number {
+  if (!releaseDate) return 0;
+  const m = releaseDate.match(/^(\d{4})/);
+  return m ? Number(m[1]) : 0;
+}
+
 export default function HomeScreen() {
   const insets = useSafeAreaInsets();
   const spotifyUser = useAppStore(s => s.spotifyUser);
+  const spotifyTokens = useAppStore(s => s.spotifyTokens);
   const spotifyBootstrap = useAppStore(s => s.spotifyBootstrap);
   const setMoodInput = useAppStore(s => s.setMoodInput);
+  const addPlaylist = useAppStore(s => s.addPlaylist);
+  const setCurrentPlaylist = useAppStore(s => s.setCurrentPlaylist);
+  const setTokens = useAppStore(s => s.setTokens);
   const params = useLocalSearchParams<{ skipSync?: string }>();
   const skipSync = params.skipSync === "1" || params.skipSync === "true";
   const [phase, setPhase] = useState<Phase>(skipSync ? "home" : "syncing");
@@ -279,6 +304,7 @@ export default function HomeScreen() {
   const [selectedTrack, setSelectedTrack] = useState<Track | null>(null);
   const [showModal, setShowModal] = useState(false);
   const [loadingStep, setLoadingStep] = useState(0);
+  const [saving, setSaving] = useState(false);
   const fadeAnim = useRef(new Animated.Value(1)).current;
   const userFirstName =
     spotifyUser?.display_name?.trim().split(/\s+/)[0] ||
@@ -299,7 +325,8 @@ export default function HomeScreen() {
             .map(a => a.name)
             .filter(Boolean)
             .join(", ") || "Unknown Artist",
-        duration: "3:00",
+        duration: formatDurationMs(Number(t.duration_ms ?? 0)),
+        albumImageUrl: t.album?.images?.[0]?.url || undefined,
         gradientStart: ["#1a2535", "#22323f", "#2a2138", "#163026", "#2f2420"][
           i % 5
         ],
@@ -307,10 +334,10 @@ export default function HomeScreen() {
           i % 5
         ],
         album: t.album?.name || "Spotify",
-        year: new Date().getFullYear(),
-        bpm: 110,
-        genre: [],
-        liked: false,
+        year: parseReleaseYear(t.album?.release_date),
+        bpm: Math.round(Number(t.tempo ?? 0)),
+        genre: t.genres ?? [],
+        liked: Boolean(t.is_saved),
         spotifyUri: t.uri,
         previewUrl: t.preview_url ?? undefined,
       }));
@@ -328,29 +355,95 @@ export default function HomeScreen() {
   useEffect(() => {
     if (phase !== "loading") return;
     setLoadingStep(0);
-    const timers = [
-      setTimeout(() => setLoadingStep(1), 1000),
-      setTimeout(() => setLoadingStep(2), 2200),
-      setTimeout(() => {
+    let cancelled = false;
+    const timers: ReturnType<typeof setTimeout>[] = [];
+
+    const run = async () => {
+      try {
+        timers.push(setTimeout(() => !cancelled && setLoadingStep(1), 700));
+        timers.push(setTimeout(() => !cancelled && setLoadingStep(2), 1500));
+
         const finalPrompt = composePrompt(moodText, selections);
-        useAppStore.getState().setCurrentPlaylist({
+        const result = await Promise.race([
+          analyzeMoodAndRecommend({
+            moodInput: finalPrompt,
+            spotifyUser,
+            spotifyBootstrap,
+            spotifyAccessToken: spotifyTokens?.accessToken,
+          }),
+          new Promise<never>((_, reject) =>
+            setTimeout(
+              () => reject(new Error("playlist generation timeout")),
+              22_000,
+            ),
+          ),
+        ]);
+        const { tracks: generatedTracks, playlistName } = result;
+
+        if (cancelled) return;
+
+        const fallbackTracks = tracks.length ? tracks : MOCK_TRACKS;
+        const finalTracks = generatedTracks.length ? generatedTracks : fallbackTracks;
+        const totalMins = finalTracks.reduce((sum: number, t: Track) => {
+          const [m, s] = t.duration.split(":").map(Number);
+          return sum + m + s / 60;
+        }, 0);
+
+        setCurrentPlaylist({
+          id: "gen_1",
+          name: playlistName || "AI 추천 플레이리스트",
+          coverEmoji: "♬",
+          gradientStart: "#1a2535",
+          gradientEnd: "#0e1822",
+          trackCount: finalTracks.length,
+          duration: `${Math.max(1, Math.round(totalMins))}분`,
+          liked: false,
+          tracks: finalTracks,
+          createdAt: new Date(),
+          moodInput: finalPrompt,
+        });
+        setTracks(finalTracks);
+        timers.push(setTimeout(() => !cancelled && goTo("preview"), 450));
+      } catch (error) {
+        console.error("[home] playlist generation failed:", error);
+        if (cancelled) return;
+        const fallbackPrompt = composePrompt(moodText, selections);
+        const fallbackTracks = tracks.length ? tracks : MOCK_TRACKS;
+        const fallbackTotalMins = fallbackTracks.reduce((sum: number, t: Track) => {
+          const [m, s] = t.duration.split(":").map(Number);
+          return sum + m + s / 60;
+        }, 0);
+        setCurrentPlaylist({
           id: "gen_1",
           name: "AI 추천 플레이리스트",
           coverEmoji: "♬",
           gradientStart: "#1a2535",
           gradientEnd: "#0e1822",
-          trackCount: tracks.length,
-          duration: "65분",
+          trackCount: fallbackTracks.length,
+          duration: `${Math.max(1, Math.round(fallbackTotalMins || 65))}분`,
           liked: false,
-          tracks,
+          tracks: fallbackTracks,
           createdAt: new Date(),
-          moodInput: finalPrompt,
+          moodInput: fallbackPrompt,
         });
         goTo("preview");
-      }, 3600),
-    ];
-    return () => timers.forEach(clearTimeout);
-  }, [phase, moodText, selections, tracks]);
+      }
+    };
+
+    run();
+    return () => {
+      cancelled = true;
+      timers.forEach(clearTimeout);
+    };
+  }, [
+    phase,
+    moodText,
+    selections,
+    setCurrentPlaylist,
+    spotifyBootstrap,
+    spotifyTokens?.accessToken,
+    spotifyUser,
+  ]);
 
   function goTo(next: Phase) {
     Animated.timing(fadeAnim, {
@@ -415,8 +508,19 @@ export default function HomeScreen() {
   }
 
   function toggleLike(id: string) {
+    let nextLiked: boolean | null = null;
     setTracks(prev =>
-      prev.map(t => (t.id === id ? { ...t, liked: !t.liked } : t)),
+      prev.map(t => {
+        if (t.id !== id) return t;
+        const updated = { ...t, liked: !t.liked };
+        nextLiked = updated.liked;
+        return updated;
+      }),
+    );
+    setSelectedTrack(prev =>
+      prev && prev.id === id && nextLiked !== null
+        ? { ...prev, liked: nextLiked }
+        : prev,
     );
   }
 
@@ -425,8 +529,99 @@ export default function HomeScreen() {
     setShowModal(true);
   }
 
-  function saveToSpotify() {
-    router.push("/result/gen_1" as any);
+  useEffect(() => {
+    if (!selectedTrack) return;
+    const latest = tracks.find(t => t.id === selectedTrack.id);
+    if (latest) setSelectedTrack(latest);
+  }, [selectedTrack?.id, tracks]);
+
+  async function saveToSpotify() {
+    if (saving) return;
+    setSaving(true);
+
+    const basePlaylist = useAppStore.getState().currentPlaylist;
+    if (!basePlaylist) {
+      router.push("/result/gen_1" as any);
+      setSaving(false);
+      return;
+    }
+
+    if (!spotifyTokens?.accessToken || !spotifyUser?.id) {
+      router.push("/result/gen_1" as any);
+      setSaving(false);
+      return;
+    }
+
+    const uris = tracks
+      .map(t => t.spotifyUri)
+      .filter((v): v is string => Boolean(v));
+    if (!uris.length) {
+      router.push("/result/gen_1" as any);
+      setSaving(false);
+      return;
+    }
+
+    try {
+      let accessToken = spotifyTokens.accessToken;
+      if (
+        spotifyTokens.refreshToken &&
+        spotifyTokens.expiresAt &&
+        Date.now() > spotifyTokens.expiresAt - 30_000
+      ) {
+        const refreshed = await refreshSpotifyAccessToken({
+          refreshToken: spotifyTokens.refreshToken,
+        });
+        setTokens(refreshed);
+        accessToken = refreshed.accessToken;
+      }
+
+      const saved = await Promise.race([
+        savePlaylistToSpotify(
+          accessToken,
+          spotifyUser.id,
+          basePlaylist.name,
+          uris,
+        ),
+        new Promise<never>((_, reject) =>
+          setTimeout(
+            () => reject(new Error("spotify save timeout")),
+            25_000,
+          ),
+        ),
+      ]);
+      const updated = {
+        ...basePlaylist,
+        tracks,
+        trackCount: tracks.length,
+        spotifyId: saved?.id,
+        spotifyUrl: saved?.externalUrl,
+      };
+      setCurrentPlaylist(updated);
+      addPlaylist(updated);
+      router.push({
+        pathname: "/result/[id]",
+        params: { id: updated.id || "gen_1" },
+      } as any);
+    } catch (err) {
+      console.warn("[home] save playlist failed:", err);
+      const msg = String((err as Error)?.message ?? err);
+      const needsRelogin =
+        msg.includes("권한(scope) 부족") ||
+        msg.includes("인증 만료") ||
+        msg.toLowerCase().includes("insufficient_scope") ||
+        msg.toLowerCase().includes("invalid_token");
+      const isTimeout = msg.toLowerCase().includes("timeout");
+      Alert.alert(
+        "Spotify 저장 실패",
+        isTimeout
+          ? "Spotify 응답이 지연되어 저장을 완료하지 못했어요. 네트워크 상태를 확인한 뒤 다시 시도해 주세요."
+          : needsRelogin
+          ? "Spotify 권한 또는 인증이 만료되어 저장하지 못했어요. Spotify를 다시 로그인한 뒤 다시 시도해 주세요."
+          : "Spotify 앱 설정 또는 계정 권한 문제로 저장에 실패했어요. Spotify Developer Dashboard에서 User Management(사용자 등록)와 앱 권한을 확인해 주세요.",
+      );
+    } finally {
+      setSaving(false);
+    }
   }
   const canGenerate = moodText.trim().length > 0;
   const canResetInput = moodText.trim().length > 0;
@@ -471,6 +666,7 @@ export default function HomeScreen() {
             onDelete={deleteTrack}
             onLike={toggleLike}
             onSave={saveToSpotify}
+            saving={saving}
           />
         )}
       </Animated.View>
@@ -1033,6 +1229,7 @@ function PreviewView({
   onDelete,
   onLike,
   onSave,
+  saving,
 }: any) {
   const totalTracks = tracks.length;
   const totalMins = tracks.reduce((sum: number, t: Track) => {
@@ -1064,7 +1261,7 @@ function PreviewView({
       {/* 트랙 목록 */}
       <ScrollView
         style={{ flex: 1 }}
-        contentContainerStyle={[styles.trackList, { paddingBottom: 130 }]}
+        contentContainerStyle={[styles.trackList, { paddingBottom: 220 }]}
         showsVerticalScrollIndicator={false}
       >
         {tracks.map((track: Track, i: number) => (
@@ -1080,7 +1277,15 @@ function PreviewView({
       </ScrollView>
 
       {/* 하단 저장 바 */}
-      <View style={[styles.pvBar, { paddingBottom: insets.bottom + 16 }]}>
+      <View
+        style={[
+          styles.pvBar,
+          {
+            bottom: PREVIEW_BAR_BOTTOM_OFFSET,
+            paddingBottom: Math.max(8, insets.bottom * 0.25),
+          },
+        ]}
+      >
         <GlassCard style={styles.pvBarInfo} padding={10}>
           <Music2 size={14} color={Colors.t2} strokeWidth={2.1} />
           <Text
@@ -1107,7 +1312,8 @@ function PreviewView({
         <PrimaryButton
           label="Spotify에 저장하기"
           onPress={onSave}
-          style={{ flex: 1 }}
+          loading={saving}
+          style={styles.pvSaveBtn}
           fontSize={14}
         />
       </View>
@@ -1663,23 +1869,24 @@ const styles = StyleSheet.create({
   },
   pvBar: {
     position: "absolute",
-    bottom: 0,
     left: 0,
     right: 0,
     paddingHorizontal: 18,
-    paddingTop: 12,
-    backgroundColor: "rgba(6,13,9,0.98)",
-    borderTopWidth: 1,
-    borderTopColor: Colors.glassBd,
-    flexDirection: "row",
+    paddingTop: 8,
+    backgroundColor: "transparent",
     gap: 10,
+    zIndex: 20,
+    elevation: 20,
   },
   pvBarInfo: {
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
-    flex: 1,
+    width: "100%",
     borderRadius: Radius.md,
+  },
+  pvSaveBtn: {
+    width: "100%",
   },
   pvMetaRow: {
     flexDirection: "row",

@@ -190,6 +190,10 @@ export default function SpotifyLoginScreen() {
       redirectUri,
       responseType: AuthSession.ResponseType.Code,
       usePKCE: !isInsecureWebContext,
+      extraParams: {
+        // scope 변경/권한 반영을 위해 동의 화면을 강제로 다시 노출
+        show_dialog: "true",
+      },
     },
     SPOTIFY_DISCOVERY,
   );

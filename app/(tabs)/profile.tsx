@@ -4,6 +4,7 @@
 //  3탭: 내 정보 / 내 플리 / 설정
 // ─────────────────────────────────────────────────────────
 import { router } from "expo-router";
+import { useFocusEffect } from "@react-navigation/native";
 import {
   Bell,
   ChartColumnBig,
@@ -22,7 +23,7 @@ import {
   Trash2,
   Upload,
 } from "lucide-react-native";
-import React, { useState } from "react";
+import React, { useCallback, useMemo, useState } from "react";
 import {
   ScrollView,
   StatusBar,
@@ -41,6 +42,11 @@ import PlaylistCard from "../../src/components/music/PlaylistCard";
 import { Colors } from "../../src/constants/colors";
 import { FontSize } from "../../src/constants/layout";
 import { useAppStore } from "../../src/store/useAppStore";
+import {
+  getMoodtuneCreatedPlaylists,
+  refreshSpotifyAccessToken,
+} from "../../src/api/spotify.service";
+import { Playlist } from "../../src/types";
 
 const PROFILE_TABS = ["내 정보", "내 플리", "설정"];
 
@@ -51,28 +57,99 @@ const SETTING_ROWS = [
   { Icon: ChartColumnBig, label: "사용 통계 공유", toggle: false },
 ];
 
+function estimateDurationLabel(trackCount: number): string {
+  const min = Math.max(12, trackCount * 4);
+  if (min >= 60) {
+    const h = Math.floor(min / 60);
+    const m = min % 60;
+    return m ? `${h}시간 ${m}분` : `${h}시간`;
+  }
+  return `${min}분`;
+}
+
 export default function ProfileScreen() {
   const insets = useSafeAreaInsets();
-  const playlists = useAppStore(s => s.playlists);
+  const spotifyTokens = useAppStore(s => s.spotifyTokens);
+  const setTokens = useAppStore(s => s.setTokens);
   const spotifyUser = useAppStore(s => s.spotifyUser);
   const spotifyBootstrap = useAppStore(s => s.spotifyBootstrap);
-  const toggleLike = useAppStore(s => s.toggleLike);
+  const setCurrentPlaylist = useAppStore(s => s.setCurrentPlaylist);
   const logout = useAppStore(s => s.logout);
+  const [remotePlaylists, setRemotePlaylists] = useState<Playlist[]>([]);
   const [activeTab, setActiveTab] = useState("내 정보");
   const [notif, setNotif] = useState(true);
   const [dark, setDark] = useState(true);
   const [dataSave, setData] = useState(false);
   const [analytics, setAna] = useState(false);
+  useFocusEffect(
+    useCallback(() => {
+      let cancelled = false;
+      async function load() {
+        if (!spotifyTokens?.accessToken) {
+          if (!cancelled) setRemotePlaylists([]);
+          return;
+        }
+        let accessToken = spotifyTokens.accessToken;
+        try {
+          const list = await getMoodtuneCreatedPlaylists(accessToken);
+          const ownedList = spotifyUser?.id
+            ? list.filter(p => p.owner_id === spotifyUser.id)
+            : list;
+          if (cancelled) return;
+          const enriched: Playlist[] = ownedList.map((p, i) => ({
+            id: `remote_${p.id}`,
+            spotifyId: p.id,
+            ownerId: p.owner_id || undefined,
+            spotifyUrl: p.external_url || undefined,
+            name: p.name || `Moodtune Playlist ${i + 1}`,
+            coverEmoji: "🎵",
+            coverImageUrl: p.images?.[0]?.url || undefined,
+            gradientStart: "#1a2535",
+            gradientEnd: "#0e1822",
+            trackCount: Number(p.tracks?.total ?? 0),
+            duration: estimateDurationLabel(Number(p.tracks?.total ?? 0)),
+            liked: false,
+            tracks: [],
+            createdAt: new Date(),
+            moodInput: "",
+          }));
+          if (!cancelled) setRemotePlaylists(enriched);
+        } catch (err) {
+          const msg = String((err as Error)?.message ?? err);
+          if (msg.includes("(401)") && spotifyTokens?.refreshToken) {
+            try {
+              const refreshed = await refreshSpotifyAccessToken({
+                refreshToken: spotifyTokens.refreshToken,
+              });
+              if (cancelled) return;
+              setTokens(refreshed);
+            } catch {
+              // no-op
+            }
+          }
+        }
+      }
+      load();
+      return () => {
+        cancelled = true;
+      };
+    }, [setTokens, spotifyTokens?.accessToken, spotifyTokens?.refreshToken, spotifyUser?.id]),
+  );
+
+  const displayPlaylists = useMemo(() => {
+    return remotePlaylists;
+  }, [remotePlaylists]);
+
   const displayName = spotifyUser?.display_name || "MoodTune 사용자";
   const email = spotifyUser?.email || "spotify@email.com";
   const topGenre =
     spotifyBootstrap?.topArtists
       ?.flatMap(a => a.genres ?? [])
       .filter(Boolean)[0] || "분석 중";
-  const likedCount = playlists.filter(p => p.liked).length;
+  const likedCount = displayPlaylists.filter(p => p.liked).length;
   const trackCount = spotifyBootstrap?.topTracks?.length ?? 0;
   const stats = [
-    { label: "플레이리스트", value: playlists.length },
+    { label: "플레이리스트", value: displayPlaylists.length },
     { label: "Top 트랙", value: trackCount },
     { label: "Top 아티스트", value: spotifyBootstrap?.topArtists?.length ?? 0 },
     { label: "즐겨찾기", value: likedCount },
@@ -171,11 +248,23 @@ export default function ProfileScreen() {
           )}
           {activeTab === "내 플리" && (
             <MyPlaylistsTab
-              playlists={playlists}
-              onPress={(id: string) =>
-                router.push(`/result/${encodeURIComponent(id)}` as any)
-              }
-              onLike={toggleLike}
+              playlists={displayPlaylists}
+              onPress={(item: Playlist) => {
+                setCurrentPlaylist(item);
+                router.push({
+                  pathname: "/playlist/[id]",
+                  params: {
+                    id: item.id,
+                    spotifyId: item.spotifyId ?? "",
+                    ownerId: item.ownerId ?? "",
+                    name: item.name ?? "",
+                    duration: item.duration ?? "",
+                    trackCount: String(item.trackCount ?? 0),
+                    coverImageUrl: item.coverImageUrl ?? "",
+                  },
+                } as any);
+              }}
+              onLike={() => {}}
             />
           )}
           {activeTab === "설정" && (
@@ -243,18 +332,21 @@ function MyInfoTab({ accountRows, aiRows }: any) {
 
 // ── 내 플리 탭 ────────────────────────────────────────────
 function MyPlaylistsTab({ playlists, onPress, onLike }: any) {
+  const deduped = Array.from(
+    new Map((playlists ?? []).map((p: any) => [p.id, p])).values(),
+  );
   return (
     <View>
-      {playlists.length === 0 ? (
+      {deduped.length === 0 ? (
         <Text style={{ color: Colors.t3, textAlign: "center", marginTop: 40 }}>
           아직 플레이리스트가 없어요
         </Text>
       ) : (
-        playlists.map((p: any) => (
+        deduped.map((p: any, idx: number) => (
           <PlaylistCard
-            key={p.id}
+            key={`${p.id}-${idx}`}
             playlist={p}
-            onPress={onPress}
+            onPress={() => onPress(p)}
             onLike={onLike}
           />
         ))

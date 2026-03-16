@@ -8,6 +8,7 @@ export interface Track {
   name: string;
   artist: string;
   duration: string;           // "5:32"
+  albumImageUrl?: string;
   gradientStart: string;      // hex
   gradientEnd: string;        // hex
   album: string;
@@ -23,6 +24,7 @@ export interface Playlist {
   id: string;
   name: string;
   coverEmoji: string;
+  coverImageUrl?: string;
   gradientStart: string;
   gradientEnd: string;
   trackCount: number;
@@ -31,6 +33,8 @@ export interface Playlist {
   tracks: Track[];
   createdAt: Date;
   spotifyId?: string;
+  ownerId?: string;
+  spotifyUrl?: string;
   moodInput?: string;         // 사용자가 입력한 무드 텍스트
 }
 
@@ -74,14 +78,26 @@ export interface SpotifyTrackSummary {
   name: string;
   uri: string;
   preview_url: string | null;
+  duration_ms?: number;
+  tempo?: number;
+  is_saved?: boolean;
+  genres?: string[];
   artists: Array<{ id: string; name: string }>;
-  album: { id: string; name: string; images: Array<{ url: string }> };
+  album: {
+    id: string;
+    name: string;
+    images: Array<{ url: string }>;
+    release_date?: string;
+  };
 }
 
 export interface SpotifyPlaylistSummary {
   id: string;
   name: string;
   uri: string;
+  description?: string;
+  external_url?: string;
+  owner_id?: string;
   images: Array<{ url: string }>;
   tracks: { total: number };
 }

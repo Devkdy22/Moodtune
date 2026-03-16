@@ -6,7 +6,7 @@
 // ─────────────────────────────────────────────────────────
 import React, { useRef } from 'react';
 import {
-  Animated, TouchableOpacity, View, Text,
+  Animated, Image, TouchableOpacity, View, Text,
   StyleSheet, PanResponder, Dimensions,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -15,7 +15,7 @@ import { Colors } from '../../constants/colors';
 import { FontSize, Radius } from '../../constants/layout';
 
 const { width: W } = Dimensions.get('window');
-const SWIPE_THRESHOLD = -W * 0.35;
+const SWIPE_THRESHOLD = -W * 0.18;
 
 interface Props {
   track: Track;
@@ -31,15 +31,16 @@ export default function TrackItem({ track, index, onPress, onDelete, onLike }: P
 
   const panResponder = useRef(
     PanResponder.create({
-      onMoveShouldSetPanResponder: (_, { dx }) => Math.abs(dx) > 8,
+      onMoveShouldSetPanResponder: (_, { dx, dy }) =>
+        dx < -4 && Math.abs(dx) > Math.abs(dy),
       onPanResponderMove: (_, { dx }) => {
         if (dx < 0) {
           translateX.setValue(Math.max(dx, -100));
           deleteOpacity.setValue(Math.min(Math.abs(dx) / 80, 1));
         }
       },
-      onPanResponderRelease: (_, { dx }) => {
-        if (dx < SWIPE_THRESHOLD) {
+      onPanResponderRelease: (_, { dx, vx }) => {
+        if (dx < SWIPE_THRESHOLD || vx < -0.35) {
           // 삭제 실행
           Animated.timing(translateX, {
             toValue: -W,
@@ -80,12 +81,16 @@ export default function TrackItem({ track, index, onPress, onDelete, onLike }: P
           style={styles.card}
         >
           {/* 앨범 아트 */}
-          <LinearGradient
-            colors={[track.gradientStart, track.gradientEnd]}
-            style={styles.artwork}
-          >
-            <Text style={styles.artworkEmoji}>{track.emoji}</Text>
-          </LinearGradient>
+          {track.albumImageUrl ? (
+            <Image source={{ uri: track.albumImageUrl }} style={styles.artworkImage} />
+          ) : (
+            <LinearGradient
+              colors={[track.gradientStart, track.gradientEnd]}
+              style={styles.artwork}
+            >
+              <Text style={styles.artworkEmoji}>{track.emoji}</Text>
+            </LinearGradient>
+          )}
 
           {/* 트랙 정보 */}
           <View style={styles.info}>
@@ -145,6 +150,13 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     flexShrink: 0,
+  },
+  artworkImage: {
+    width: 46,
+    height: 46,
+    borderRadius: 12,
+    flexShrink: 0,
+    backgroundColor: '#101a16',
   },
   artworkEmoji: {
     fontSize: 20,

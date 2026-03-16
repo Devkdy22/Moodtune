@@ -14,6 +14,8 @@ export function useCuration() {
     isGenerating, setGenerating,
     generationStep, setGenerationStep,
     currentPlaylist, setCurrentPlaylist,
+    spotifyUser,
+    spotifyBootstrap,
     addPlaylist,
     resetCuration,
   } = useAppStore();
@@ -26,7 +28,11 @@ export function useCuration() {
       setGenerationStep(1);  // 무드 분석
 
       // Gemini 호출 (현재 mock)
-      const { tracks, playlistName } = await analyzeMoodAndRecommend(moodInput);
+      const { tracks, playlistName } = await analyzeMoodAndRecommend({
+        moodInput,
+        spotifyUser,
+        spotifyBootstrap,
+      });
 
       setGenerationStep(2);  // 음악 매칭
       await new Promise(r => setTimeout(r, 800));
@@ -61,7 +67,7 @@ export function useCuration() {
     } finally {
       setGenerating(false);
     }
-  }, [moodInput, isGenerating]);
+  }, [moodInput, isGenerating, spotifyBootstrap, spotifyUser]);
 
   const saveToLibrary = useCallback((playlist: Playlist) => {
     addPlaylist(playlist);
