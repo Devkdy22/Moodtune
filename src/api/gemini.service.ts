@@ -4,6 +4,7 @@
 //  사용자 Spotify 데이터 + 무드 입력을 기반으로 개인화 플리 생성
 // ─────────────────────────────────────────────────────────
 import { discoverSpotifyTracks } from "./spotify.service";
+import { Platform } from "react-native";
 import {
   SpotifyBootstrapData,
   SpotifyTrackSummary,
@@ -11,15 +12,9 @@ import {
   Track,
 } from "../types";
 
-const GEMINI_API_KEY = process.env.EXPO_PUBLIC_GEMINI_API_KEY ?? "";
-const GEMINI_MODEL = process.env.EXPO_PUBLIC_GEMINI_MODEL ?? "gemini-2.0-flash";
-const GEMINI_CANDIDATE_MODELS = [
-  GEMINI_MODEL,
-  "gemini-2.0-flash",
-  "gemini-2.0-flash-lite",
-  "gemini-1.5-flash-latest",
-  "gemini-1.5-flash",
-].filter((v, i, arr) => Boolean(v) && arr.indexOf(v) === i);
+const GEMINI_PROXY_URL = String(
+  process.env.EXPO_PUBLIC_GEMINI_PROXY_URL ?? "",
+).trim();
 
 type GeminiPlaylistJson = {
   playlistName?: string;
@@ -34,6 +29,17 @@ type GeminiError = Error & {
   bodyText?: string;
 };
 
+type GeminiProxyResponse = {
+  playlist?: GeminiPlaylistJson;
+  model?: string;
+  error?: {
+    code?: string;
+    message?: string;
+    retryAfterMs?: number;
+    details?: unknown;
+  };
+};
+
 export type PersonalizedPlaylistInput = {
   moodInput: string;
   spotifyUser: SpotifyUser | null;
@@ -45,6 +51,7 @@ export type PersonalizedPlaylistOutput = {
   tracks: Track[];
   playlistName: string;
   reasoning?: string;
+  fallbackReason?: "gemini_quota_exceeded" | "gemini_error";
 };
 
 function toTrack(summary: SpotifyTrackSummary, i: number): Track {
@@ -79,8 +86,34 @@ function parseReleaseYear(releaseDate?: string): number {
   return m ? Number(m[1]) : 0;
 }
 
-function stripCodeFence(text: string): string {
-  return text.replace(/```json/gi, "").replace(/```/g, "").trim();
+function sleep(ms: number) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function discoverSpotifyTracksWithTimeout(
+  args: {
+    accessToken: string;
+    moodInput: string;
+    bootstrap: SpotifyBootstrapData | null;
+    limit: number;
+  },
+  timeoutMs: number,
+): Promise<SpotifyTrackSummary[]> {
+  let timeoutTriggered = false;
+  const result = await Promise.race([
+    discoverSpotifyTracks(args),
+    (async () => {
+      await sleep(timeoutMs);
+      timeoutTriggered = true;
+      return [] as SpotifyTrackSummary[];
+    })(),
+  ]);
+  if (timeoutTriggered) {
+    console.warn(
+      `[Spotify] catalog discovery timed out (${timeoutMs}ms), continuing with local picks.`,
+    );
+  }
+  return result;
 }
 
 function formatDurationMs(durationMs: number): string {
@@ -91,8 +124,12 @@ function formatDurationMs(durationMs: number): string {
   return `${min}:${String(sec).padStart(2, "0")}`;
 }
 
-function buildGeminiUrl(model: string): string {
-  return `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_API_KEY}`;
+function buildGeminiProxyUrl(): string {
+  if (GEMINI_PROXY_URL) return GEMINI_PROXY_URL;
+  if (Platform.OS === "web") return "/api/gemini-recommend";
+  throw new Error(
+    "Missing EXPO_PUBLIC_GEMINI_PROXY_URL for native app Gemini proxy.",
+  );
 }
 
 function extractTargetMinutes(text: string): number | null {
@@ -148,53 +185,36 @@ function buildPrompt(input: PersonalizedPlaylistInput): string {
 }
 
 async function callGemini(prompt: string): Promise<GeminiPlaylistJson> {
-  if (!GEMINI_API_KEY) {
-    throw new Error("Missing EXPO_PUBLIC_GEMINI_API_KEY");
-  }
-
-  let lastErr: GeminiError | null = null;
-
-  for (const model of GEMINI_CANDIDATE_MODELS) {
-    const res = await fetch(buildGeminiUrl(model), {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        contents: [{ parts: [{ text: prompt }] }],
-        generationConfig: {
-          temperature: 0.7,
-          topP: 0.95,
-        },
-      }),
-    });
-
-    const json: any = await res.json().catch(() => null);
-    if (!res.ok) {
-      const msg = String(json?.error?.message ?? "");
-      const isModelNotFound =
-        res.status === 404 &&
-        (msg.includes("is not found") || msg.includes("not supported for generateContent"));
-
-      lastErr = new Error(
-        `[Gemini] request failed (${res.status}) [${model}]: ${JSON.stringify(json)}`,
-      ) as GeminiError;
-      lastErr.status = res.status;
-      lastErr.bodyText = JSON.stringify(json);
-      if (isModelNotFound) {
-        continue;
-      }
-      throw lastErr;
+  const res = await fetch(buildGeminiProxyUrl(), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ prompt }),
+  });
+  const raw = await res.text();
+  let json: GeminiProxyResponse | null = null;
+  if (raw) {
+    try {
+      json = JSON.parse(raw) as GeminiProxyResponse;
+    } catch {
+      json = null;
     }
-
-    const text = String(
-      json?.candidates?.[0]?.content?.parts?.[0]?.text ?? "",
-    );
-    if (!text) throw new Error(`[Gemini] empty response text [${model}]`);
-
-    const parsed = JSON.parse(stripCodeFence(text));
-    return parsed as GeminiPlaylistJson;
+  }
+  if (!res.ok) {
+    const detail =
+      json?.error?.message ??
+      (raw ? raw.slice(0, 180) : "empty response body");
+    const err = new Error(
+      `[GeminiProxy] request failed (${res.status}): ${detail}`,
+    ) as GeminiError;
+    err.status = res.status;
+    err.bodyText = raw || JSON.stringify(json?.error ?? {});
+    throw err;
   }
 
-  throw lastErr ?? new Error("[Gemini] model fallback exhausted");
+  if (!json?.playlist) {
+    throw new Error("[GeminiProxy] invalid response shape");
+  }
+  return json.playlist;
 }
 
 function buildFallbackPlaylistName(moodInput: string): string {
@@ -394,12 +414,15 @@ export async function analyzeMoodAndRecommend(
     let catalogPool: SpotifyTrackSummary[] = [];
     if (input.spotifyAccessToken) {
       try {
-        catalogPool = await discoverSpotifyTracks({
-          accessToken: input.spotifyAccessToken,
-          moodInput: input.moodInput,
-          bootstrap: input.spotifyBootstrap,
-          limit: 90,
-        });
+        catalogPool = await discoverSpotifyTracksWithTimeout(
+          {
+            accessToken: input.spotifyAccessToken,
+            moodInput: input.moodInput,
+            bootstrap: input.spotifyBootstrap,
+            limit: 90,
+          },
+          6500,
+        );
       } catch (err) {
         console.warn("[Spotify] catalog discovery fallback:", err);
       }
@@ -432,6 +455,7 @@ export async function analyzeMoodAndRecommend(
     };
   } catch (err) {
     const geminiErr = err as GeminiError | undefined;
+    const isGeminiQuotaExceeded = geminiErr?.status === 429;
     if (geminiErr?.status === 429) {
       console.warn(
         "[Gemini] quota exceeded (429). Switching to Spotify-only local recommendation.",
@@ -447,14 +471,17 @@ export async function analyzeMoodAndRecommend(
       targetMinutes,
     );
     let catalogPool: SpotifyTrackSummary[] = [];
-    if (input.spotifyAccessToken) {
+    if (!isGeminiQuotaExceeded && input.spotifyAccessToken) {
       try {
-        catalogPool = await discoverSpotifyTracks({
-          accessToken: input.spotifyAccessToken,
-          moodInput: input.moodInput,
-          bootstrap: input.spotifyBootstrap,
-          limit: 90,
-        });
+        catalogPool = await discoverSpotifyTracksWithTimeout(
+          {
+            accessToken: input.spotifyAccessToken,
+            moodInput: input.moodInput,
+            bootstrap: input.spotifyBootstrap,
+            limit: 90,
+          },
+          5000,
+        );
       } catch (catalogErr) {
         console.warn("[Spotify] catalog discovery fallback:", catalogErr);
       }
@@ -467,6 +494,9 @@ export async function analyzeMoodAndRecommend(
       return {
         tracks: [],
         playlistName: buildFallbackPlaylistName(input.moodInput),
+        fallbackReason: isGeminiQuotaExceeded
+          ? "gemini_quota_exceeded"
+          : "gemini_error",
       };
     }
     return {
@@ -479,6 +509,9 @@ export async function analyzeMoodAndRecommend(
         geminiErr?.status === 429
           ? "Gemini 쿼터가 초과되어 Spotify 데이터 기반으로 플레이리스트를 생성했어요."
           : "Spotify 데이터 기반으로 플레이리스트를 생성했어요.",
+      fallbackReason: isGeminiQuotaExceeded
+        ? "gemini_quota_exceeded"
+        : "gemini_error",
     };
   }
 }

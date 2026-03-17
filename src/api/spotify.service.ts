@@ -180,6 +180,10 @@ let moodtunePlaylistsCache:
 let moodtunePlaylistsInFlight: Promise<SpotifyPlaylistSummary[]> | null = null;
 let moodtunePlaylistsCooldownUntil = 0;
 let moodtunePlaylistsCacheTokenKey: string | null = null;
+let playlistTracksCache = new Map<string, { data: SpotifyTrackSummary[]; fetchedAt: number }>();
+let playlistTracksInFlight = new Map<string, Promise<SpotifyTrackSummary[]>>();
+let playlistTracksCooldownUntil = new Map<string, number>();
+let spotifyGlobalCooldownUntil = 0;
 
 function wait(ms: number) {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -190,6 +194,10 @@ async function spotifyFetch(
   init: RequestInit,
   timeoutMs = 15_000,
 ): Promise<Response> {
+  const now = Date.now();
+  if (spotifyGlobalCooldownUntil > now) {
+    await wait(spotifyGlobalCooldownUntil - now);
+  }
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -224,12 +232,39 @@ async function spotifyGetJson<T>(accessToken: string, endpoint: string): Promise
       const retryMs = Number.isFinite(retryAfterSec) && retryAfterSec > 0
         ? retryAfterSec * 1000
         : attempt * 1200;
+      spotifyGlobalCooldownUntil = Math.max(
+        spotifyGlobalCooldownUntil,
+        Date.now() + retryMs,
+      );
       await wait(retryMs);
       continue;
     }
 
+    const wwwAuthenticate = String(
+      res.headers.get("www-authenticate") ?? "",
+    );
+    const rawMessage = String(json?.error?.message ?? "");
+    const isScopeProblem =
+      /insufficient_scope/i.test(wwwAuthenticate) ||
+      rawMessage.toLowerCase().includes("insufficient") ||
+      rawMessage.toLowerCase().includes("scope");
+    const isAuthProblem =
+      res.status === 401 || /invalid_token/i.test(wwwAuthenticate);
+    const hint =
+      isAuthProblem
+        ? " (인증 만료: Spotify 재로그인 필요)"
+        : res.status === 403
+        ? isScopeProblem
+          ? " (권한(scope) 부족: Spotify 재로그인 필요)"
+          : " (권한/앱 설정 문제: Spotify Dashboard User Management 및 앱 권한 확인)"
+        : "";
+    const authHeaderHint = wwwAuthenticate
+      ? ` [www-authenticate: ${wwwAuthenticate}]`
+      : "";
     const err = new Error(
-      `[Spotify] request failed (${res.status}) ${endpoint}: ${JSON.stringify(json)}`,
+      `[Spotify] request failed (${res.status}) ${endpoint}${hint}: ${JSON.stringify(
+        json,
+      )}${authHeaderHint}`,
     ) as SpotifyApiError;
     err.status = res.status;
     err.endpoint = endpoint;
@@ -266,6 +301,10 @@ async function spotifyWriteJson<T>(
         Number.isFinite(retryAfterSec) && retryAfterSec > 0
           ? retryAfterSec * 1000
           : attempt * 1200;
+      spotifyGlobalCooldownUntil = Math.max(
+        spotifyGlobalCooldownUntil,
+        Date.now() + retryMs,
+      );
       await wait(retryMs);
       continue;
     }
@@ -661,6 +700,24 @@ export async function getSpotifyPlaylistTracks(args: {
   ownerId?: string;
   limit?: number;
 }): Promise<SpotifyTrackSummary[]> {
+  const tokenKey = args.accessToken.slice(0, 24);
+  const key = `${tokenKey}:${args.playlistId}`;
+  const now = Date.now();
+  const cached = playlistTracksCache.get(key);
+  const cooldownUntil = playlistTracksCooldownUntil.get(key) ?? 0;
+  if (cached && now - cached.fetchedAt < 2 * 60_000) {
+    return cached.data;
+  }
+  if (cooldownUntil > now) {
+    if (cached) return cached.data;
+    throw new Error(
+      `[Spotify] playlist tracks request cooling down (${Math.ceil((cooldownUntil - now) / 1000)}s): ${args.playlistId}`,
+    );
+  }
+  const inFlight = playlistTracksInFlight.get(key);
+  if (inFlight) return inFlight;
+
+  const loader = (async () => {
   const requestedLimit = Math.max(1, Math.floor(args.limit ?? 1000));
   const safeMax = Math.min(5000, requestedLimit);
   const pageSize = 100;
@@ -677,10 +734,17 @@ export async function getSpotifyPlaylistTracks(args: {
         useOwnerPath && args.ownerId
           ? `/users/${encodeURIComponent(args.ownerId)}/playlists/${encodeURIComponent(args.playlistId)}`
           : `/playlists/${encodeURIComponent(args.playlistId)}`;
-      const json = await spotifyGetJson<{ items: any[]; next?: string | null }>(
-        args.accessToken,
-        `${basePath}/${endpointKind}?limit=${fetchLimit}&offset=${offset}`,
-      );
+      let json: { items: any[]; next?: string | null };
+      try {
+        json = await spotifyGetJson<{ items: any[]; next?: string | null }>(
+          args.accessToken,
+          `${basePath}/${endpointKind}?limit=${fetchLimit}&offset=${offset}`,
+        );
+      } catch (err) {
+        // 중간 페이지에서 레이트리밋이 걸리면 지금까지 가져온 트랙이라도 반환한다.
+        if (rows.length > 0) return rows;
+        throw err;
+      }
       const pageItems = json.items ?? [];
       rows.push(...pageItems);
       if (pageItems.length < fetchLimit || !json.next) break;
@@ -692,8 +756,6 @@ export async function getSpotifyPlaylistTracks(args: {
   const attempts: Array<() => Promise<any[]>> = [
     () => fetchPaged("items"),
     () => fetchPaged("tracks"),
-    () => fetchPaged("items", true),
-    () => fetchPaged("tracks", true),
     async () => {
       const oneShot = await spotifyGetJson<{ tracks?: { items?: any[] } }>(
         args.accessToken,
@@ -701,6 +763,8 @@ export async function getSpotifyPlaylistTracks(args: {
       );
       return (oneShot.tracks?.items ?? []).slice(0, safeMax);
     },
+    () => fetchPaged("items", true),
+    () => fetchPaged("tracks", true),
   ];
 
   let lastErr: unknown = null;
@@ -709,13 +773,30 @@ export async function getSpotifyPlaylistTracks(args: {
       const allItems = await run();
       const items = allItems.map((row: any) => row?.track).filter(Boolean);
       const mapped = items.map(mapTrackItemToSummary).filter(v => Boolean(v.id));
-      if (mapped.length) return mapped;
+      if (mapped.length) {
+        playlistTracksCache.set(key, { data: mapped, fetchedAt: Date.now() });
+        return mapped;
+      }
     } catch (err) {
+      const e = err as SpotifyApiError;
+      if (e?.status === 429) {
+        playlistTracksCooldownUntil.set(key, Date.now() + 30_000);
+        if (cached?.data?.length) return cached.data;
+        throw err;
+      }
       lastErr = err;
     }
   }
   if (lastErr) throw lastErr;
   return [];
+  })();
+
+  playlistTracksInFlight.set(key, loader);
+  try {
+    return await loader;
+  } finally {
+    playlistTracksInFlight.delete(key);
+  }
 }
 
 export async function getSpotifyRecentlyPlayed(
