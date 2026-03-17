@@ -57,6 +57,9 @@ import { PrimaryButton } from "../../src/components/common/Button";
 import GlassCard from "../../src/components/common/GlassCard";
 import LogoIcon from "../../src/components/common/LogoIcon";
 import ScreenBackground from "../../src/components/common/ScreenBackground";
+import ToastOverlay, {
+  ToastItem,
+} from "../../src/components/common/ToastOverlay";
 import TrackDetailModal from "../../src/components/music/TrackDetailModal";
 import TrackItem from "../../src/components/music/TrackItem";
 import { Colors } from "../../src/constants/colors";
@@ -305,6 +308,8 @@ export default function HomeScreen() {
   const [showModal, setShowModal] = useState(false);
   const [loadingStep, setLoadingStep] = useState(0);
   const [saving, setSaving] = useState(false);
+  const [toastQueue, setToastQueue] = useState<ToastItem[]>([]);
+  const toastDedupRef = useRef<Record<string, number>>({});
   const fadeAnim = useRef(new Animated.Value(1)).current;
   const userFirstName =
     spotifyUser?.display_name?.trim().split(/\s+/)[0] ||
@@ -351,6 +356,25 @@ export default function HomeScreen() {
     return () => clearTimeout(t);
   }, [phase]);
 
+  function enqueueToast(message: string, dedupeKey: string, tone: ToastItem["tone"] = "info") {
+    const now = Date.now();
+    const lastAt = toastDedupRef.current[dedupeKey] ?? 0;
+    if (now - lastAt < 5000) return;
+    toastDedupRef.current[dedupeKey] = now;
+    setToastQueue(prev => [
+      ...prev,
+      {
+        id: `${dedupeKey}_${now}`,
+        message,
+        tone,
+      },
+    ]);
+  }
+
+  function shiftToast(id: string) {
+    setToastQueue(prev => prev.filter(t => t.id !== id));
+  }
+
   // 로딩 단계 시뮬레이션
   useEffect(() => {
     if (phase !== "loading") return;
@@ -378,9 +402,16 @@ export default function HomeScreen() {
             ),
           ),
         ]);
-        const { tracks: generatedTracks, playlistName } = result;
+        const { tracks: generatedTracks, playlistName, fallbackReason } = result;
 
         if (cancelled) return;
+        if (fallbackReason === "gemini_quota_exceeded") {
+          enqueueToast(
+            "Gemini 쿼터가 초과되어 Spotify 기반 추천으로 생성했어요.",
+            "gemini_quota_exceeded",
+            "warning",
+          );
+        }
 
         const fallbackTracks = tracks.length ? tracks : MOCK_TRACKS;
         const finalTracks = generatedTracks.length ? generatedTracks : fallbackTracks;
@@ -407,6 +438,14 @@ export default function HomeScreen() {
       } catch (error) {
         console.error("[home] playlist generation failed:", error);
         if (cancelled) return;
+        const msg = String((error as Error)?.message ?? error);
+        if (msg.includes("(429)") || msg.toLowerCase().includes("quota")) {
+          enqueueToast(
+            "Gemini 쿼터가 초과되어 Spotify 기반 추천으로 생성했어요.",
+            "gemini_quota_exceeded_error",
+            "warning",
+          );
+        }
         const fallbackPrompt = composePrompt(moodText, selections);
         const fallbackTracks = tracks.length ? tracks : MOCK_TRACKS;
         const fallbackTotalMins = fallbackTracks.reduce((sum: number, t: Track) => {
@@ -632,6 +671,11 @@ export default function HomeScreen() {
     <ScreenBackground intensity="strong">
       <StatusBar barStyle="light-content" />
       <Animated.View style={[{ flex: 1 }, { opacity: fadeAnim }]}>
+        <ToastOverlay
+          queue={toastQueue}
+          topInset={insets.top + 10}
+          onShift={shiftToast}
+        />
         {phase === "syncing" && (
           <SyncingView insets={insets} userFirstName={userFirstName} />
         )}

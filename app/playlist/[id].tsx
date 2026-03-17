@@ -121,6 +121,7 @@ export default function PlaylistDetailScreen() {
   const [loadingRemoteTracks, setLoadingRemoteTracks] = useState(false);
   const [remoteTrackError, setRemoteTrackError] = useState<string | null>(null);
   const fetchedKeyRef = useRef<string | null>(null);
+  const retryAfterRef = useRef<number>(0);
   const tracks =
     current.tracks?.length
       ? current.tracks
@@ -140,6 +141,7 @@ export default function PlaylistDetailScreen() {
     let cancelled = false;
     async function loadTracks() {
       if (!current.spotifyId || !spotifyTokens?.accessToken || current.tracks?.length) return;
+      if (retryAfterRef.current > Date.now()) return;
       const fetchKey = `${current.spotifyId}:${spotifyTokens.accessToken}`;
       if (fetchedKeyRef.current === fetchKey) return;
       try {
@@ -153,7 +155,7 @@ export default function PlaylistDetailScreen() {
             accessToken,
             playlistId: current.spotifyId,
             ownerId: current.ownerId ?? undefined,
-            limit: 1000,
+            limit: 300,
           });
         } catch (firstErr) {
           const msg = String((firstErr as Error)?.message ?? firstErr);
@@ -170,7 +172,7 @@ export default function PlaylistDetailScreen() {
             accessToken,
             playlistId: current.spotifyId,
             ownerId: current.ownerId ?? undefined,
-            limit: 1000,
+            limit: 300,
           });
         }
         if (cancelled) return;
@@ -206,10 +208,19 @@ export default function PlaylistDetailScreen() {
             "Spotify 읽기 권한 부족으로 트랙을 불러오지 못했어요. Spotify를 다시 로그인해 주세요.",
           );
         }
+        if (message.includes("(429)") || message.includes("cooling down")) {
+          retryAfterRef.current = Date.now() + 30_000;
+          fetchedKeyRef.current = fetchKey;
+          setRemoteTrackError(
+            "Spotify 요청이 많아 잠시 대기 중이에요. 30초 후 다시 시도해 주세요.",
+          );
+        }
         if (message.includes("(401)")) {
           setRemoteTrackError("로그인 세션이 만료되어 트랙을 불러오지 못했어요. 다시 로그인해 주세요.");
         }
-        fetchedKeyRef.current = null;
+        if (!message.includes("(429)") && !message.includes("cooling down")) {
+          fetchedKeyRef.current = null;
+        }
         console.warn("[playlist-detail] remote tracks load failed:", err);
       } finally {
         if (!cancelled) setLoadingRemoteTracks(false);
