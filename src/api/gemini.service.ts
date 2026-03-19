@@ -22,6 +22,10 @@ type GeminiPlaylistJson = {
   reasoning?: string;
   targetCount?: number;
   mixStrategy?: "familiar" | "balanced" | "discovery";
+  includeKeywords?: string[];
+  excludeKeywords?: string[];
+  genreHints?: string[];
+  energyLevel?: "low" | "mid" | "high";
 };
 
 type GeminiError = Error & {
@@ -176,11 +180,15 @@ function buildPrompt(input: PersonalizedPlaylistInput): string {
     `사용자 요청: ${safeMoodInput}`,
     "",
     "아래 JSON 스키마로만 답해라(마크다운/설명 금지).",
-    '{"playlistName":"string","moodSummary":"string","reasoning":"string","targetCount":12,"mixStrategy":"familiar|balanced|discovery"}',
+    '{"playlistName":"string","moodSummary":"string","reasoning":"string","targetCount":12,"mixStrategy":"familiar|balanced|discovery","includeKeywords":["string"],"excludeKeywords":["string"],"genreHints":["string"],"energyLevel":"low|mid|high"}',
     "",
     "제약:",
     "- targetCount는 8~20 정수",
     "- mixStrategy는 familiar, balanced, discovery 중 하나",
+    "- includeKeywords는 2~8개 핵심 키워드",
+    "- excludeKeywords는 피하고 싶은 분위기/장르 키워드",
+    "- genreHints는 장르 힌트 0~6개",
+    "- energyLevel은 low/mid/high 중 하나",
   ].join("\n");
 }
 
@@ -337,6 +345,265 @@ function pickUniqueFromPool(
   return picked;
 }
 
+function clamp(n: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, Math.floor(n)));
+}
+
+function normalizeText(value: string): string {
+  return String(value ?? "")
+    .toLowerCase()
+    .replace(/[^0-9A-Za-z가-힣\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function keywordList(value: string): string[] {
+  const normalized = normalizeText(value);
+  if (!normalized) return [];
+  return normalized
+    .split(" ")
+    .map(v => v.trim())
+    .filter(v => v.length >= 2);
+}
+
+function parseGeminiKeywords(values: unknown): string[] {
+  if (!Array.isArray(values)) return [];
+  return Array.from(
+    new Set(
+      values
+        .map(v => normalizeText(String(v ?? "")))
+        .filter(v => v.length >= 2),
+    ),
+  ).slice(0, 10);
+}
+
+function trackDedupKey(track: SpotifyTrackSummary): string {
+  if (track.id) return `id:${track.id}`;
+  if (track.uri) return `uri:${track.uri}`;
+  const name = normalizeText(track.name);
+  const artists = (track.artists ?? [])
+    .map(a => normalizeText(a.name))
+    .filter(Boolean)
+    .join(",");
+  return `na:${name}|${artists}`;
+}
+
+function scoreTrackForMood(args: {
+  track: SpotifyTrackSummary;
+  include: string[];
+  exclude: string[];
+  genreHints: string[];
+  userArtistNames: Set<string>;
+  userArtistIds: Set<string>;
+  userGenreHints: Set<string>;
+  userTopTrackIds: Set<string>;
+  energy?: GeminiPlaylistJson["energyLevel"];
+  strategy?: GeminiPlaylistJson["mixStrategy"];
+}): number {
+  const {
+    track,
+    include,
+    exclude,
+    genreHints,
+    userArtistNames,
+    userArtistIds,
+    userGenreHints,
+    userTopTrackIds,
+    energy,
+    strategy,
+  } = args;
+  const text = normalizeText(
+    [
+      track.name,
+      ...(track.artists ?? []).map(a => a.name),
+      ...(track.genres ?? []),
+      track.album?.name ?? "",
+    ].join(" "),
+  );
+
+  let score = 0;
+  include.forEach(k => {
+    if (text.includes(k)) score += 2.2;
+  });
+  genreHints.forEach(k => {
+    if (text.includes(k)) score += 2.8;
+  });
+  exclude.forEach(k => {
+    if (text.includes(k)) score -= 4.2;
+  });
+
+  const artistNames = (track.artists ?? [])
+    .map(a => normalizeText(a.name))
+    .filter(Boolean);
+  const artistIds = (track.artists ?? [])
+    .map(a => String(a?.id ?? "").trim())
+    .filter(Boolean);
+  const trackGenres = (track.genres ?? []).map(v => normalizeText(v));
+
+  if (artistNames.some(n => userArtistNames.has(n))) score += 3.1;
+  if (artistIds.some(id => userArtistIds.has(id))) score += 3.4;
+  if (trackGenres.some(g => userGenreHints.has(g))) score += 2.4;
+  if (userTopTrackIds.has(String(track.id ?? ""))) {
+    score += strategy === "familiar" ? 0.6 : -1.0;
+  }
+
+  const tempo = Number(track.tempo ?? 0);
+  if (tempo > 0) {
+    if (energy === "low") {
+      if (tempo <= 108) score += 1.6;
+      if (tempo >= 135) score -= 1.4;
+    } else if (energy === "high") {
+      if (tempo >= 118) score += 1.8;
+      if (tempo <= 92) score -= 1.2;
+    } else {
+      if (tempo >= 95 && tempo <= 125) score += 1.1;
+    }
+  }
+
+  if (strategy === "familiar" && track.is_saved) score += 1.3;
+  if (strategy === "discovery" && !track.is_saved) score += 1.1;
+  return score;
+}
+
+function chooseCuratedTracks(args: {
+  catalogPool: SpotifyTrackSummary[];
+  localPicks: SpotifyTrackSummary[];
+  fallback: SpotifyTrackSummary[];
+  bootstrap: SpotifyBootstrapData | null;
+  moodInput: string;
+  parsed?: GeminiPlaylistJson;
+  targetCount: number;
+}): SpotifyTrackSummary[] {
+  const include = Array.from(
+    new Set([
+      ...keywordList(args.moodInput),
+      ...parseGeminiKeywords(args.parsed?.includeKeywords),
+    ]),
+  ).slice(0, 12);
+  const exclude = parseGeminiKeywords(args.parsed?.excludeKeywords);
+  const genreHints = parseGeminiKeywords(args.parsed?.genreHints);
+  const userArtistNames = new Set(
+    (args.bootstrap?.topArtists ?? [])
+      .map(a => normalizeText(a.name))
+      .filter(Boolean),
+  );
+  const userArtistIds = new Set(
+    (args.bootstrap?.topArtists ?? [])
+      .map(a => String(a?.id ?? "").trim())
+      .filter(Boolean),
+  );
+  const userGenreHints = new Set(
+    (args.bootstrap?.topArtists ?? [])
+      .flatMap(a => a.genres ?? [])
+      .map(v => normalizeText(v))
+      .filter(Boolean),
+  );
+  const userTopTrackIds = new Set(
+    (args.bootstrap?.topTracks ?? [])
+      .map(t => String(t?.id ?? "").trim())
+      .filter(Boolean),
+  );
+
+  const combined = [
+    ...args.catalogPool,
+    ...args.localPicks,
+    ...args.fallback,
+  ];
+  const dedupMap = new Map<string, SpotifyTrackSummary>();
+  combined.forEach(track => {
+    const key = trackDedupKey(track);
+    if (!key) return;
+    if (!dedupMap.has(key)) dedupMap.set(key, track);
+  });
+
+  const scored = Array.from(dedupMap.values())
+    .map(track => ({
+      track,
+      score: scoreTrackForMood({
+        track,
+        include,
+        exclude,
+        genreHints,
+        userArtistNames,
+        userArtistIds,
+        userGenreHints,
+        userTopTrackIds,
+        energy: args.parsed?.energyLevel,
+        strategy: args.parsed?.mixStrategy,
+      }),
+    }))
+    .sort((a, b) => b.score - a.score);
+
+  const picked: SpotifyTrackSummary[] = [];
+  const artistCount = new Map<string, number>();
+  const maxPerArtist = args.parsed?.mixStrategy === "familiar" ? 3 : 2;
+  const familiarRatio =
+    args.parsed?.mixStrategy === "familiar"
+      ? 0.7
+      : args.parsed?.mixStrategy === "discovery"
+        ? 0.4
+        : 0.65;
+  const familiarTarget = Math.max(
+    2,
+    Math.min(args.targetCount - 2, Math.round(args.targetCount * familiarRatio)),
+  );
+  const maxExactTopTracks = args.parsed?.mixStrategy === "familiar" ? 5 : 3;
+  let exactTopTracksCount = 0;
+
+  const isFamiliarTrack = (track: SpotifyTrackSummary) => {
+    const artistNames = (track.artists ?? [])
+      .map(a => normalizeText(a.name))
+      .filter(Boolean);
+    const artistIds = (track.artists ?? [])
+      .map(a => String(a?.id ?? "").trim())
+      .filter(Boolean);
+    const genres = (track.genres ?? []).map(v => normalizeText(v));
+    return (
+      track.is_saved ||
+      artistNames.some(v => userArtistNames.has(v)) ||
+      artistIds.some(v => userArtistIds.has(v)) ||
+      genres.some(v => userGenreHints.has(v))
+    );
+  };
+  const familiarPool = scored.filter(v => isFamiliarTrack(v.track));
+  const discoveryPool = scored.filter(v => !isFamiliarTrack(v.track));
+
+  const tryPush = (track: SpotifyTrackSummary): boolean => {
+    const primaryArtist = normalizeText(track.artists?.[0]?.name ?? "");
+    const used = artistCount.get(primaryArtist) ?? 0;
+    if (primaryArtist && used >= maxPerArtist) return false;
+    if (userTopTrackIds.has(String(track.id ?? "")) && exactTopTracksCount >= maxExactTopTracks) {
+      return false;
+    }
+    picked.push(track);
+    if (primaryArtist) artistCount.set(primaryArtist, used + 1);
+    if (userTopTrackIds.has(String(track.id ?? ""))) {
+      exactTopTracksCount += 1;
+    }
+    return true;
+  };
+
+  for (const item of familiarPool) {
+    if (picked.length >= familiarTarget) break;
+    tryPush(item.track);
+  }
+
+  for (const item of discoveryPool) {
+    if (picked.length >= args.targetCount) break;
+    tryPush(item.track);
+  }
+
+  if (picked.length < args.targetCount) {
+    for (const item of scored) {
+      const key = trackDedupKey(item.track);
+      if (picked.find(t => trackDedupKey(t) === key)) continue;
+      if (tryPush(item.track) && picked.length >= args.targetCount) break;
+    }
+  }
+
+  return picked.slice(0, args.targetCount);
+}
+
 function localPersonalizedPick(
   bootstrap: SpotifyBootstrapData | null,
   strategy: GeminiPlaylistJson["mixStrategy"],
@@ -433,14 +700,23 @@ export async function analyzeMoodAndRecommend(
       parsed.targetCount,
       targetMinutes,
     );
-    const mixed = [...catalogPool, ...localPicks, ...fallback].sort(
-      () => Math.random() - 0.5,
+    const targetCount = clamp(
+      parsed.targetCount ??
+        (targetMinutes
+          ? Math.round((targetMinutes * 60) / 3.6)
+          : 20),
+      10,
+      30,
     );
-    const dedup = new Map<string, SpotifyTrackSummary>();
-    mixed.forEach(t => {
-      if (t?.id && !dedup.has(t.id)) dedup.set(t.id, t);
+    const finalSummaries = chooseCuratedTracks({
+      catalogPool,
+      localPicks,
+      fallback,
+      bootstrap: input.spotifyBootstrap,
+      moodInput: input.moodInput,
+      parsed,
+      targetCount,
     });
-    const finalSummaries = Array.from(dedup.values()).slice(0, 24);
     if (!finalSummaries.length) {
       throw new Error("[Gemini] no usable tracks from model/fallback");
     }
@@ -486,10 +762,19 @@ export async function analyzeMoodAndRecommend(
         console.warn("[Spotify] catalog discovery fallback:", catalogErr);
       }
     }
-    const finalSummaries = [...catalogPool, ...localFallback, ...fallback]
-      .sort(() => Math.random() - 0.5)
-      .filter((t, i, arr) => t?.id && arr.findIndex(v => v.id === t.id) === i)
-      .slice(0, 24);
+    const fallbackTarget = clamp(
+      targetMinutes ? Math.round((targetMinutes * 60) / 3.8) : 20,
+      10,
+      30,
+    );
+    const finalSummaries = chooseCuratedTracks({
+      catalogPool,
+      localPicks: localFallback,
+      fallback,
+      bootstrap: input.spotifyBootstrap,
+      moodInput: input.moodInput,
+      targetCount: fallbackTarget,
+    });
     if (!finalSummaries.length) {
       return {
         tracks: [],

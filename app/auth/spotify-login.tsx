@@ -97,6 +97,7 @@ const C = {
 const HEADER_H = 56;
 const USE_NATIVE_DRIVER = Platform.OS !== "web";
 const DEFAULT_WEB_BASE_URL = "https://moodtune-web.vercel.app";
+const SPOTIFY_PKCE_KEY = "moodtune_spotify_pkce_verifier";
 
 /* ═══════════════════════════════════════════════════════════════
    MAIN COMPONENT
@@ -198,54 +199,70 @@ export default function SpotifyLoginScreen() {
     SPOTIFY_DISCOVERY,
   );
   const isOAuthReady = Boolean(request);
+  const handledAuthCodesRef = useRef<Set<string>>(new Set());
+
+  const getStoredCodeVerifier = () => {
+    if (Platform.OS !== "web") return null;
+    if (typeof window === "undefined") return null;
+    return window.sessionStorage.getItem(SPOTIFY_PKCE_KEY);
+  };
+
+  const setStoredCodeVerifier = (value?: string | null) => {
+    if (Platform.OS !== "web") return;
+    if (typeof window === "undefined") return;
+    if (!value) {
+      window.sessionStorage.removeItem(SPOTIFY_PKCE_KEY);
+      return;
+    }
+    window.sessionStorage.setItem(SPOTIFY_PKCE_KEY, value);
+  };
 
   useEffect(() => {
-    if (!__DEV__) return;
-    console.log("[spotify-login] shouldUseProxy:", shouldUseProxy);
-    console.log("[spotify-login] proxyRedirectUri:", proxyRedirectUri);
-    console.log("[spotify-login] nativeRedirectUri:", nativeRedirectUri);
-    console.log("[spotify-login] redirectUri:", redirectUri);
-    console.log("[spotify-login] proxyReturnUrl:", proxyReturnUrl);
-    console.log("[spotify-login] webOrigin:", webOrigin);
-    console.log("[spotify-login] isInsecureWebContext:", isInsecureWebContext);
-    console.log("[spotify-login] devWebBaseUrl:", devWebBaseUrl);
-    console.log("[spotify-login] prodWebBaseUrl:", prodWebBaseUrl);
-    console.log("[spotify-login] devWebRedirectUri:", devWebRedirectUri);
-    console.log("[spotify-login] prodWebRedirectUri:", prodWebRedirectUri);
-    console.log("[spotify-login] devProxyReturnUrl:", devProxyReturnUrl);
-    console.log("[spotify-login] prodProxyReturnUrl:", prodProxyReturnUrl);
-    if (request?.url) {
-      try {
-        const u = new URL(request.url);
-        console.log("[spotify-login] authUrl:", request.url);
-        console.log(
-          "[spotify-login] authUrl.client_id:",
-          JSON.stringify(u.searchParams.get("client_id")),
-        );
-        console.log(
-          "[spotify-login] authUrl.redirect_uri:",
-          JSON.stringify(u.searchParams.get("redirect_uri")),
-        );
-      } catch {
-        console.log("[spotify-login] authUrl: (parse failed)");
-      }
+    if (Platform.OS !== "web") return;
+    const verifier = (request as any)?.codeVerifier as string | undefined;
+    if (verifier) {
+      setStoredCodeVerifier(verifier);
     }
-  }, [
-    devProxyReturnUrl,
-    devWebBaseUrl,
-    devWebRedirectUri,
-    isInsecureWebContext,
-    nativeRedirectUri,
-    prodProxyReturnUrl,
-    prodWebBaseUrl,
-    prodWebRedirectUri,
-    proxyRedirectUri,
-    proxyReturnUrl,
-    redirectUri,
-    request?.url,
-    shouldUseProxy,
-    webOrigin,
-  ]);
+  }, [request]);
+
+  // Web fallback: if OAuth popup flow is blocked/closed, handle code from full-page redirect.
+  useEffect(() => {
+    if (Platform.OS !== "web") return;
+    if (!request) return;
+    if (typeof window === "undefined") return;
+    if (!window.location.search.includes("code=")) return;
+
+    const parsed = request.parseReturnUrl(window.location.href);
+    if (parsed.type !== "success") return;
+    const code = (parsed as any).params?.code as string | undefined;
+    if (!code) return;
+    if (handledAuthCodesRef.current.has(code)) return;
+    handledAuthCodesRef.current.add(code);
+
+    let cancelled = false;
+    (async () => {
+      try {
+        setOauthLoading(true);
+        setOauthError(null);
+        await completeOAuth(code);
+        if (!cancelled) {
+          window.history.replaceState({}, "", nativeRedirectUri);
+        }
+      } catch (e: any) {
+        if (cancelled) return;
+        const msg = String(e?.message ?? "OAuth failed");
+        setOauthError(msg);
+        window.history.replaceState({}, "", nativeRedirectUri);
+        Alert.alert("Spotify 로그인 실패", msg);
+      } finally {
+        if (!cancelled) setOauthLoading(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [nativeRedirectUri, request]);
 
   /* ── Animated Values ── */
   // 입장 시퀀스
@@ -490,13 +507,17 @@ export default function SpotifyLoginScreen() {
   }, []);
 
   const completeOAuth = async (code: string) => {
-    const codeVerifier = (request as any)?.codeVerifier as string | undefined;
+    const codeVerifier =
+      ((request as any)?.codeVerifier as string | undefined) ??
+      getStoredCodeVerifier() ??
+      undefined;
     if (!codeVerifier) throw new Error("Missing OAuth codeVerifier");
     const tokens = await exchangeSpotifyCodeForTokens({
       code,
       codeVerifier,
       redirectUri,
     });
+    setStoredCodeVerifier(null);
     setTokens(tokens);
     router.replace("/auth/spotify-permissions" as any);
   };
@@ -572,8 +593,26 @@ export default function SpotifyLoginScreen() {
       await completeOAuth(code);
     } catch (e: any) {
       console.error("[spotify-login] OAuth failed:", e);
-      setOauthError(String(e?.message ?? "OAuth failed"));
-      Alert.alert("Spotify 로그인 실패", "다시 시도해주세요.");
+      const msg = String(e?.message ?? "OAuth failed");
+      setOauthError(msg);
+
+      // Browser extension / popup bridge issues: fallback to full-page OAuth redirect.
+      if (
+        Platform.OS === "web" &&
+        request?.url &&
+        (msg.includes("message channel closed") ||
+          msg.includes("asynchronous response by returning true") ||
+          msg.includes("window.closed") ||
+          msg.includes("Cross-Origin-Opener-Policy"))
+      ) {
+        setStoredCodeVerifier((request as any)?.codeVerifier as string | undefined);
+        if (typeof window !== "undefined") {
+          window.location.assign(request.url);
+          return;
+        }
+      }
+
+      Alert.alert("Spotify 로그인 실패", msg);
     } finally {
       setOauthLoading(false);
     }

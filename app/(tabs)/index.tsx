@@ -620,6 +620,7 @@ export default function HomeScreen() {
           spotifyUser.id,
           basePlaylist.name,
           uris,
+          basePlaylist.spotifyId,
         ),
         new Promise<never>((_, reject) =>
           setTimeout(
@@ -650,10 +651,16 @@ export default function HomeScreen() {
         msg.toLowerCase().includes("insufficient_scope") ||
         msg.toLowerCase().includes("invalid_token");
       const isTimeout = msg.toLowerCase().includes("timeout");
+      const isRateLimit =
+        msg.includes("(429)") ||
+        msg.includes("요청 한도 초과") ||
+        msg.toLowerCase().includes("too many requests");
       Alert.alert(
         "Spotify 저장 실패",
         isTimeout
           ? "Spotify 응답이 지연되어 저장을 완료하지 못했어요. 네트워크 상태를 확인한 뒤 다시 시도해 주세요."
+          : isRateLimit
+          ? "Spotify 요청 한도(429)에 걸렸어요. 30~90초 후 다시 저장해 주세요."
           : needsRelogin
           ? "Spotify 권한 또는 인증이 만료되어 저장하지 못했어요. Spotify를 다시 로그인한 뒤 다시 시도해 주세요."
           : "Spotify 앱 설정 또는 계정 권한 문제로 저장에 실패했어요. Spotify Developer Dashboard에서 User Management(사용자 등록)와 앱 권한을 확인해 주세요.",
