@@ -592,7 +592,7 @@ export default function SpotifyLoginScreen() {
       if (!code) throw new Error("Missing OAuth code");
       await completeOAuth(code);
     } catch (e: any) {
-      console.error("[spotify-login] OAuth failed:", e);
+      console.warn("[spotify-login] OAuth failed.");
       const msg = String(e?.message ?? "OAuth failed");
       setOauthError(msg);
 

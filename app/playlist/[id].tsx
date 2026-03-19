@@ -221,7 +221,7 @@ export default function PlaylistDetailScreen() {
         if (!message.includes("(429)") && !message.includes("cooling down")) {
           fetchedKeyRef.current = null;
         }
-        console.warn("[playlist-detail] remote tracks load failed:", err);
+        console.warn("[playlist-detail] remote tracks load failed.");
       } finally {
         if (!cancelled) setLoadingRemoteTracks(false);
       }

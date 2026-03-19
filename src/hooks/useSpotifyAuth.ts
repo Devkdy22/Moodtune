@@ -27,7 +27,7 @@ export function useSpotifyAuth() {
       });
       return true;
     } catch (err) {
-      console.error('[useSpotifyAuth] login error:', err);
+      console.warn('[useSpotifyAuth] login error.');
       return false;
     }
   }, []);

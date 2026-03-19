@@ -44,6 +44,12 @@ type GeminiProxyResponse = {
   };
 };
 
+function safeErrorMessage(err: unknown): string {
+  if (err instanceof Error) return err.message || "error";
+  if (typeof err === "string") return err;
+  return "unknown_error";
+}
+
 export type PersonalizedPlaylistInput = {
   moodInput: string;
   spotifyUser: SpotifyUser | null;
@@ -691,7 +697,9 @@ export async function analyzeMoodAndRecommend(
           6500,
         );
       } catch (err) {
-        console.warn("[Spotify] catalog discovery fallback:", err);
+        console.warn(
+          `[Spotify] catalog discovery fallback: ${safeErrorMessage(err)}`,
+        );
       }
     }
     const localPicks = localPersonalizedPick(
@@ -737,7 +745,9 @@ export async function analyzeMoodAndRecommend(
         "[Gemini] quota exceeded (429). Switching to Spotify-only local recommendation.",
       );
     } else {
-      console.warn("[Gemini] personalized recommendation fallback:", err);
+      console.warn(
+        `[Gemini] personalized recommendation fallback: ${safeErrorMessage(err)}`,
+      );
     }
 
     const localFallback = localPersonalizedPick(
@@ -759,7 +769,9 @@ export async function analyzeMoodAndRecommend(
           5000,
         );
       } catch (catalogErr) {
-        console.warn("[Spotify] catalog discovery fallback:", catalogErr);
+        console.warn(
+          `[Spotify] catalog discovery fallback: ${safeErrorMessage(catalogErr)}`,
+        );
       }
     }
     const fallbackTarget = clamp(

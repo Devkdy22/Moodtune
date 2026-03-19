@@ -112,10 +112,10 @@ export default function LibraryScreen() {
             await loadWithAccessToken(refreshed.accessToken);
             return;
           } catch (refreshErr) {
-            console.warn("[library] remote load retry after refresh failed:", refreshErr);
+            console.warn("[library] remote load retry after refresh failed.");
           }
         }
-        console.warn("[library] remote moodtune playlists load failed:", err);
+        console.warn("[library] remote moodtune playlists load failed.");
       }
     }
     loadRemote();
@@ -176,7 +176,7 @@ export default function LibraryScreen() {
               await removeSpotifyPlaylist(spotifyTokens.accessToken, item.spotifyId);
             }
           } catch (err) {
-            console.warn("[library] spotify playlist remove failed:", err);
+            console.warn("[library] spotify playlist remove failed.");
           } finally {
             removePlaylist(id);
             const localMatch = playlists.find(p => p.spotifyId === item.spotifyId);
@@ -225,7 +225,7 @@ export default function LibraryScreen() {
                   await removeSpotifyPlaylist(spotifyTokens.accessToken, item.spotifyId);
                 }
               } catch (err) {
-                console.warn("[library] bulk spotify remove failed:", err);
+                console.warn("[library] bulk spotify remove failed.");
               } finally {
                 removePlaylist(item.id);
                 const localMatch = playlists.find(p => p.spotifyId === item.spotifyId);

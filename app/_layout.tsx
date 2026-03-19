@@ -49,7 +49,7 @@ export default function RootLayout() {
   }, [fontsLoaded, fontError]);
 
   useEffect(() => {
-    if (fontError) console.warn("Font loading failed:", fontError);
+    if (fontError) console.warn("Font loading failed.");
   }, [fontError]);
 
   if (!fontsLoaded && !fontError) return null;

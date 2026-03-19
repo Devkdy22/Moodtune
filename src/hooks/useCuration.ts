@@ -62,7 +62,7 @@ export function useCuration() {
       return playlist;
 
     } catch (err) {
-      console.error('[useCuration] generate error:', err);
+      console.warn('[useCuration] generate error.');
       return null;
     } finally {
       setGenerating(false);

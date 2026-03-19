@@ -436,7 +436,7 @@ export default function HomeScreen() {
         setTracks(finalTracks);
         timers.push(setTimeout(() => !cancelled && goTo("preview"), 450));
       } catch (error) {
-        console.error("[home] playlist generation failed:", error);
+        console.warn("[home] playlist generation failed.");
         if (cancelled) return;
         const msg = String((error as Error)?.message ?? error);
         if (msg.includes("(429)") || msg.toLowerCase().includes("quota")) {
@@ -643,7 +643,7 @@ export default function HomeScreen() {
         params: { id: updated.id || "gen_1" },
       } as any);
     } catch (err) {
-      console.warn("[home] save playlist failed:", err);
+      console.warn("[home] save playlist failed.");
       const msg = String((err as Error)?.message ?? err);
       const needsRelogin =
         msg.includes("권한(scope) 부족") ||

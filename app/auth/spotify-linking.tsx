@@ -191,7 +191,7 @@ export default function SpotifyLinkingScreen() {
         }
         if (!cancelled) router.replace(nextPath as any);
       } catch (e) {
-        console.error("[spotify-linking] bootstrap failed:", e);
+        console.warn("[spotify-linking] bootstrap failed.");
         if (!cancelled) router.replace("/auth/spotify-login" as any);
       }
     };

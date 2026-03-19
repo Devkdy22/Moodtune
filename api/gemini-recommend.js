@@ -23,6 +23,10 @@ const REQUESTS_PER_WINDOW = Math.max(
 );
 const IP_WINDOW = new Map();
 let upstreamCooldownUntil = 0;
+const ALLOWED_ORIGINS = String(process.env.GEMINI_PROXY_ALLOWED_ORIGINS || "")
+  .split(",")
+  .map(v => v.trim().replace(/\/+$/, ""))
+  .filter(Boolean);
 
 function json(res, status, payload) {
   res.status(status).setHeader("content-type", "application/json; charset=utf-8");
@@ -54,6 +58,25 @@ function stripCodeFence(text) {
   return String(text || "").replace(/```json/gi, "").replace(/```/g, "").trim();
 }
 
+function isOriginAllowed(req) {
+  if (!ALLOWED_ORIGINS.length) return true;
+  const origin = String(req.headers.origin || "").trim().replace(/\/+$/, "");
+  if (!origin) return false;
+  return ALLOWED_ORIGINS.includes(origin);
+}
+
+function checkProxyAccess(req) {
+  if (!isOriginAllowed(req)) {
+    return {
+      ok: false,
+      status: 403,
+      code: "forbidden_origin",
+      message: "Request origin is not allowed",
+    };
+  }
+  return { ok: true };
+}
+
 async function callGemini(prompt, apiKey) {
   if (!CANDIDATE_MODELS.length) {
     throw {
@@ -64,10 +87,13 @@ async function callGemini(prompt, apiKey) {
   let lastError = null;
   for (const model of CANDIDATE_MODELS) {
     const endpoint =
-      `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+      `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
     const res = await fetch(endpoint, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: {
+        "content-type": "application/json",
+        "x-goog-api-key": apiKey,
+      },
       body: JSON.stringify({
         contents: [{ parts: [{ text: prompt }] }],
         generationConfig: {
@@ -126,11 +152,22 @@ export default async function handler(req, res) {
       methods: ["POST"],
       freeTierOnly: true,
       allowedModels: CANDIDATE_MODELS,
+      originAllowListEnabled: ALLOWED_ORIGINS.length > 0,
     });
   }
 
   if (req.method !== "POST") {
     return json(res, 405, { error: { code: "method_not_allowed", message: "POST only" } });
+  }
+
+  const access = checkProxyAccess(req);
+  if (!access.ok) {
+    return json(res, access.status, {
+      error: {
+        code: access.code,
+        message: access.message,
+      },
+    });
   }
 
   const now = Date.now();

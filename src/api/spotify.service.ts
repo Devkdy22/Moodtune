@@ -39,6 +39,35 @@ export const SPOTIFY_DISCOVERY = {
 };
 export const MOODTUNE_PLAYLIST_MARKER = "[moodtune_app]";
 
+function redactSensitiveText(input: string): string {
+  return String(input ?? "")
+    .replace(/Bearer\s+[A-Za-z0-9\-._~+/]+=*/gi, "Bearer [REDACTED]")
+    .replace(/(access_token|refresh_token|id_token)\s*[:=]\s*["'][^"']+["']/gi, "$1=[REDACTED]")
+    .replace(/(code_verifier|code|client_secret)\s*[:=]\s*["'][^"']+["']/gi, "$1=[REDACTED]");
+}
+
+function summarizeSpotifyPayload(payload: any): string {
+  if (!payload) return "empty_payload";
+  const code = String(payload?.error?.status ?? payload?.status ?? "").trim();
+  const msg = String(payload?.error?.message ?? payload?.message ?? "").trim();
+  if (!code && !msg) return "upstream_error";
+  const parts = [
+    code ? `code=${code}` : "",
+    msg ? `message=${redactSensitiveText(msg).slice(0, 180)}` : "",
+  ].filter(Boolean);
+  return parts.join(", ");
+}
+
+function errorMessage(err: unknown): string {
+  if (err instanceof Error) {
+    return redactSensitiveText(err.message || "error");
+  }
+  if (typeof err === "string") {
+    return redactSensitiveText(err);
+  }
+  return "unknown_error";
+}
+
 function isMoodtunePlaylistLike(args: {
   name?: string;
   description?: string;
@@ -87,7 +116,7 @@ export async function exchangeSpotifyCodeForTokens(args: {
   const json: any = await res.json().catch(() => null);
   if (!res.ok) {
     throw new Error(
-      `Spotify token exchange failed (${res.status}): ${JSON.stringify(json)}`,
+      `Spotify token exchange failed (${res.status}): ${summarizeSpotifyPayload(json)}`,
     );
   }
   const accessToken = String(json?.access_token ?? "");
@@ -95,7 +124,7 @@ export async function exchangeSpotifyCodeForTokens(args: {
   const expiresIn = Number(json?.expires_in ?? 0);
   if (!accessToken || !refreshToken || !expiresIn) {
     throw new Error(
-      `Spotify token response missing fields: ${JSON.stringify(json)}`,
+      `Spotify token response missing fields: ${summarizeSpotifyPayload(json)}`,
     );
   }
 
@@ -127,14 +156,14 @@ export async function refreshSpotifyAccessToken(args: {
   const json: any = await res.json().catch(() => null);
   if (!res.ok) {
     throw new Error(
-      `Spotify refresh failed (${res.status}): ${JSON.stringify(json)}`,
+      `Spotify refresh failed (${res.status}): ${summarizeSpotifyPayload(json)}`,
     );
   }
   const accessToken = String(json?.access_token ?? "");
   const expiresIn = Number(json?.expires_in ?? 0);
   if (!accessToken || !expiresIn) {
     throw new Error(
-      `Spotify refresh response missing fields: ${JSON.stringify(json)}`,
+      `Spotify refresh response missing fields: ${summarizeSpotifyPayload(json)}`,
     );
   }
   // Spotify may omit refresh_token on refresh responses; keep the existing one.
@@ -154,7 +183,9 @@ export async function getSpotifyUser(
   });
   const json: any = await res.json().catch(() => null);
   if (!res.ok) {
-    console.error("[Spotify] getSpotifyUser failed:", res.status, json);
+    console.warn(
+      `[Spotify] getSpotifyUser failed (${res.status}): ${summarizeSpotifyPayload(json)}`,
+    );
     return null;
   }
   return json as SpotifyUser;
@@ -267,7 +298,7 @@ async function spotifyGetJson<T>(accessToken: string, endpoint: string): Promise
       ? ` [www-authenticate: ${wwwAuthenticate}]`
       : "";
     const err = new Error(
-      `[Spotify] request failed (${res.status}) ${endpoint}${hint}: ${JSON.stringify(
+      `[Spotify] request failed (${res.status}) ${endpoint}${hint}: ${summarizeSpotifyPayload(
         json,
       )}${authHeaderHint}`,
     ) as SpotifyApiError;
@@ -338,7 +369,7 @@ async function spotifyWriteJson<T>(
       ? ` [www-authenticate: ${wwwAuthenticate}]`
       : "";
     const err = new Error(
-      `[Spotify] request failed (${res.status}) ${method} ${endpoint}${hint}: ${JSON.stringify(
+      `[Spotify] request failed (${res.status}) ${method} ${endpoint}${hint}: ${summarizeSpotifyPayload(
         json,
       )}${authHeaderHint}`,
     ) as SpotifyApiError;
@@ -452,7 +483,9 @@ async function createMoodtunePlaylistWithRetry(args: {
     }
 
     const err = new Error(
-      `[Spotify] request failed (${res.status}) POST /me/playlists: ${JSON.stringify(json)}`,
+      `[Spotify] request failed (${res.status}) POST /me/playlists: ${summarizeSpotifyPayload(
+        json,
+      )}`,
     ) as SpotifyApiError;
     err.status = res.status;
     err.endpoint = "/me/playlists";
@@ -471,7 +504,9 @@ function toOptionalArrayResult<T>(
   if (result.status === "fulfilled") return result.value;
   const err = result.reason as SpotifyApiError | undefined;
   if (err?.status === 401) throw err;
-  console.warn(`[Spotify] bootstrap optional step failed (${label}):`, err?.message ?? err);
+  console.warn(
+    `[Spotify] bootstrap optional step failed (${label}): ${errorMessage(err)}`,
+  );
   return fallback;
 }
 
@@ -504,12 +539,14 @@ async function getSpotifyTempoMap(
       const msg = String((err as Error)?.message ?? err);
       if (msg.includes("(403)")) {
         if (canUseAudioFeaturesApi) {
-          console.warn("[Spotify] audio-features unavailable:", err);
+          console.warn(
+            `[Spotify] audio-features unavailable: ${errorMessage(err)}`,
+          );
         }
         canUseAudioFeaturesApi = false;
         break;
       }
-      console.warn("[Spotify] audio-features unavailable:", err);
+      console.warn(`[Spotify] audio-features unavailable: ${errorMessage(err)}`);
     }
   }
 
@@ -541,12 +578,14 @@ async function getSpotifySavedMap(
       const msg = String((err as Error)?.message ?? err);
       if (msg.includes("(403)")) {
         if (canUseSavedTrackContainsApi) {
-          console.warn("[Spotify] saved-track state unavailable:", err);
+          console.warn(
+            `[Spotify] saved-track state unavailable: ${errorMessage(err)}`,
+          );
         }
         canUseSavedTrackContainsApi = false;
         break;
       }
-      console.warn("[Spotify] saved-track state unavailable:", err);
+      console.warn(`[Spotify] saved-track state unavailable: ${errorMessage(err)}`);
     }
   }
 
@@ -585,12 +624,14 @@ async function getSpotifyArtistGenresMap(
       const msg = String((err as Error)?.message ?? err);
       if (msg.includes("(403)")) {
         if (canUseArtistApi) {
-          console.warn("[Spotify] artist genres unavailable:", err);
+          console.warn(
+            `[Spotify] artist genres unavailable: ${errorMessage(err)}`,
+          );
         }
         canUseArtistApi = false;
         break;
       }
-      console.warn("[Spotify] artist genres unavailable:", err);
+      console.warn(`[Spotify] artist genres unavailable: ${errorMessage(err)}`);
     }
   }
 
@@ -1157,7 +1198,7 @@ export async function discoverSpotifyTracks(args: {
             // 잘못된 검색식은 축약된 후보로 계속 진행
             break;
           }
-          console.warn("[Spotify] track search failed:", err);
+          console.warn(`[Spotify] track search failed: ${errorMessage(err)}`);
           break;
         }
       }
@@ -1166,7 +1207,7 @@ export async function discoverSpotifyTracks(args: {
     if (!success) {
       const sample = compactQuery(rawQuery);
       if (sample) {
-        console.warn(`[Spotify] track search skipped for query="${sample}"`);
+        console.warn("[Spotify] track search skipped for compacted query.");
       }
     }
   }
@@ -1197,7 +1238,7 @@ export async function discoverSpotifyTracks(args: {
       console.warn("[Spotify] recommendations unavailable in current app mode.");
       canUseRecommendationsApi = false;
     } else {
-      console.warn("[Spotify] recommendations failed:", err);
+      console.warn(`[Spotify] recommendations failed: ${errorMessage(err)}`);
     }
   }
 
@@ -1278,7 +1319,9 @@ export async function savePlaylistToSpotify(
       await replacePlaylistItems(accessToken, cachedPlaylistId, uniqueUris);
       return { id: cachedPlaylistId };
     } catch (err) {
-      console.warn("[Spotify] cached playlist replace failed:", err);
+      console.warn(
+        `[Spotify] cached playlist replace failed: ${errorMessage(err)}`,
+      );
     }
   }
 
@@ -1312,7 +1355,9 @@ export async function savePlaylistToSpotify(
           };
         }
       } catch (reuseErr) {
-        console.warn("[Spotify] existing playlist reuse failed after 429:", reuseErr);
+        console.warn(
+          `[Spotify] existing playlist reuse failed after 429: ${errorMessage(reuseErr)}`,
+        );
       }
     }
     throw err;
@@ -1320,7 +1365,6 @@ export async function savePlaylistToSpotify(
 
   const playlistId = String(created?.id ?? "");
   const externalUrl = String(created?.external_urls?.spotify ?? "");
-  const ownerId = String(created?.owner?.id ?? "");
   if (!playlistId) {
     throw new Error("[Spotify] playlist create succeeded but id missing");
   }
@@ -1331,8 +1375,8 @@ export async function savePlaylistToSpotify(
     await replacePlaylistItems(accessToken, playlistId, uniqueUris);
   } catch (err) {
     throw new Error(
-      `[Spotify] add tracks failed for playlist ${playlistId} (owner=${ownerId || "unknown"}, tokenUser=${effectiveUserId || "unknown"}). 토큰 재로그인 후 다시 시도해 주세요. ${String(
-        (err as Error)?.message ?? err,
+      `[Spotify] add tracks failed for created playlist. 토큰 재로그인 후 다시 시도해 주세요. ${errorMessage(
+        err,
       )}`,
     );
   }
