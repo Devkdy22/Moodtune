@@ -1,10 +1,11 @@
 // Free-tier safety: only these models are allowed to prevent accidental paid usage.
 const FREE_TIER_MODELS = [
+  "gemini-2.5-flash-lite",
+  "gemini-2.5-flash",
   "gemini-2.0-flash-lite",
   "gemini-2.0-flash",
-  "gemini-1.5-flash-latest",
-  "gemini-1.5-flash",
 ];
+const API_VERSIONS = ["v1beta", "v1"];
 
 function resolveCandidateModels() {
   const requested = String(process.env.GEMINI_MODEL || "").trim();
@@ -21,7 +22,13 @@ const REQUESTS_PER_WINDOW = Math.max(
   1,
   Number.parseInt(process.env.GEMINI_PROXY_RATE_LIMIT_PER_MINUTE || "20", 10),
 );
+// Hard daily cap to reduce accidental paid usage when billing is enabled.
+const REQUESTS_PER_DAY_CAP = Math.max(
+  1,
+  Number.parseInt(process.env.GEMINI_PROXY_MAX_RPD || "180", 10),
+);
 const IP_WINDOW = new Map();
+const GLOBAL_DAY_WINDOW = { dayKey: "", count: 0 };
 let upstreamCooldownUntil = 0;
 const ALLOWED_ORIGINS = String(process.env.GEMINI_PROXY_ALLOWED_ORIGINS || "")
   .split(",")
@@ -51,6 +58,23 @@ function hitRateLimit(ip) {
     return true;
   }
   entry.count += 1;
+  return false;
+}
+
+function hitDailyCap() {
+  const now = new Date();
+  const dayKey = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}-${String(
+    now.getUTCDate(),
+  ).padStart(2, "0")}`;
+  if (GLOBAL_DAY_WINDOW.dayKey !== dayKey) {
+    GLOBAL_DAY_WINDOW.dayKey = dayKey;
+    GLOBAL_DAY_WINDOW.count = 1;
+    return false;
+  }
+  if (GLOBAL_DAY_WINDOW.count >= REQUESTS_PER_DAY_CAP) {
+    return true;
+  }
+  GLOBAL_DAY_WINDOW.count += 1;
   return false;
 }
 
@@ -86,59 +110,66 @@ async function callGemini(prompt, apiKey) {
   }
   let lastError = null;
   for (const model of CANDIDATE_MODELS) {
-    const endpoint =
-      `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
-    const res = await fetch(endpoint, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "x-goog-api-key": apiKey,
-      },
-      body: JSON.stringify({
-        contents: [{ parts: [{ text: prompt }] }],
-        generationConfig: {
-          temperature: 0.7,
-          topP: 0.95,
+    for (const version of API_VERSIONS) {
+      const endpoint =
+        `https://generativelanguage.googleapis.com/${version}/models/${model}:generateContent`;
+      const res = await fetch(endpoint, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-goog-api-key": apiKey,
         },
-      }),
-    });
-    const data = await res.json().catch(() => null);
-    if (!res.ok) {
-      const message = String(data?.error?.message || "");
-      const isModelNotFound =
-        res.status === 404 &&
-        (message.includes("is not found") || message.includes("not supported for generateContent"));
-      lastError = {
-        status: res.status,
-        message: `[GeminiProxy] request failed (${res.status}) [${model}]`,
-        body: data,
-      };
-      const isQuotaExceeded = res.status === 429;
-      if (isModelNotFound || isQuotaExceeded) continue;
-      throw lastError;
-    }
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: prompt }] }],
+          generationConfig: {
+            temperature: 0.7,
+            topP: 0.95,
+          },
+        }),
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok) {
+        const message = String(data?.error?.message || "");
+        const isModelNotFound =
+          res.status === 404 &&
+          (message.includes("is not found") ||
+            message.includes("not supported for generateContent"));
+        lastError = {
+          status: res.status,
+          message: `[GeminiProxy] request failed (${res.status}) [${model}] [${version}]`,
+          body: data,
+        };
+        const isQuotaExceeded = res.status === 429;
+        const isTransient = res.status >= 500 || res.status === 408 || res.status === 503;
+        // 모델/버전 자체가 없거나 쿼터 문제면 다음 후보로 진행
+        if (isModelNotFound || isQuotaExceeded) break;
+        // 일시 장애는 다른 API 버전/다음 모델로 우회 시도
+        if (isTransient) continue;
+        throw lastError;
+      }
 
-    const text = String(data?.candidates?.[0]?.content?.parts?.[0]?.text || "");
-    if (!text) {
-      lastError = {
-        status: 502,
-        message: `[GeminiProxy] empty response text [${model}]`,
-        body: data,
-      };
-      continue;
-    }
+      const text = String(data?.candidates?.[0]?.content?.parts?.[0]?.text || "");
+      if (!text) {
+        lastError = {
+          status: 502,
+          message: `[GeminiProxy] empty response text [${model}] [${version}]`,
+          body: data,
+        };
+        continue;
+      }
 
-    try {
-      return {
-        playlist: JSON.parse(stripCodeFence(text)),
-        model,
-      };
-    } catch (err) {
-      lastError = {
-        status: 502,
-        message: `[GeminiProxy] invalid JSON from model [${model}]`,
-        body: { text, parseError: String(err?.message || err) },
-      };
+      try {
+        return {
+          playlist: JSON.parse(stripCodeFence(text)),
+          model,
+        };
+      } catch (err) {
+        lastError = {
+          status: 502,
+          message: `[GeminiProxy] invalid JSON from model [${model}] [${version}]`,
+          body: { text, parseError: String(err?.message || err) },
+        };
+      }
     }
   }
   throw lastError || { status: 500, message: "[GeminiProxy] model fallback exhausted" };
@@ -152,6 +183,7 @@ export default async function handler(req, res) {
       methods: ["POST"],
       freeTierOnly: true,
       allowedModels: CANDIDATE_MODELS,
+      apiVersions: API_VERSIONS,
       originAllowListEnabled: ALLOWED_ORIGINS.length > 0,
     });
   }
@@ -187,6 +219,14 @@ export default async function handler(req, res) {
       error: {
         code: "rate_limited",
         message: "Too many requests to Gemini proxy",
+      },
+    });
+  }
+  if (hitDailyCap()) {
+    return json(res, 429, {
+      error: {
+        code: "free_tier_daily_cap",
+        message: "Daily request cap reached to avoid paid usage",
       },
     });
   }
