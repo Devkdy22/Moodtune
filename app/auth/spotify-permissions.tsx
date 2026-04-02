@@ -8,6 +8,7 @@ import { LinearGradient } from "expo-linear-gradient";
 import { router } from "expo-router";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
+  ActivityIndicator,
   Animated,
   Image,
   Pressable,
@@ -19,9 +20,13 @@ import {
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import Svg, { Circle, Path } from "react-native-svg";
-import { getSpotifyUser } from "../../src/api/spotify.service";
+import {
+  bootstrapSpotifyData,
+  getSpotifyUser,
+  refreshSpotifyAccessToken,
+} from "../../src/api/spotify.service";
 import { useAppStore } from "../../src/store/useAppStore";
-import type { SpotifyUser } from "../../src/types";
+import type { SpotifyBootstrapData, SpotifyUser } from "../../src/types";
 
 const C = {
   bg: "#030e07",
@@ -64,11 +69,18 @@ const PERMS = [
 export default function SpotifyPermissionsScreen() {
   const insets = useSafeAreaInsets();
   const tokens = useAppStore(s => s.spotifyTokens);
+  const cachedUser = useAppStore(s => s.spotifyUser);
+  const cachedBootstrap = useAppStore(s => s.spotifyBootstrap);
+  const setTokens = useAppStore(s => s.setTokens);
   const setSpotifyUser = useAppStore(s => s.setSpotifyUser);
+  const setSpotifyBootstrap = useAppStore(s => s.setSpotifyBootstrap);
   const logout = useAppStore(s => s.logout);
 
-  const [user, setUser] = useState<SpotifyUser | null>(null);
-  const [loadingUser, setLoadingUser] = useState(false);
+  const [user, setUser] = useState<SpotifyUser | null>(cachedUser);
+  const [dataSummary, setDataSummary] = useState<SpotifyBootstrapData | null>(cachedBootstrap);
+  const [loadingBundle, setLoadingBundle] = useState(false);
+  const [bundleError, setBundleError] = useState("");
+  const [reloadKey, setReloadKey] = useState(0);
 
   const enter = useRef(new Animated.Value(0)).current;
   useEffect(() => {
@@ -85,18 +97,65 @@ export default function SpotifyPermissionsScreen() {
       return;
     }
     let cancelled = false;
-    setLoadingUser(true);
-    getSpotifyUser(tokens.accessToken)
-      .then(u => {
-        if (!cancelled) setUser(u);
-      })
-      .finally(() => {
-        if (!cancelled) setLoadingUser(false);
-      });
+    const run = async () => {
+      setLoadingBundle(true);
+      setBundleError("");
+      try {
+        let accessToken = tokens.accessToken;
+        if (tokens.expiresAt && Date.now() > tokens.expiresAt - 30_000) {
+          const refreshed = await refreshSpotifyAccessToken({
+            refreshToken: tokens.refreshToken,
+          });
+          if (cancelled) return;
+          accessToken = refreshed.accessToken;
+          setTokens(refreshed);
+        }
+        const [me, bootstrap] = await Promise.all([
+          getSpotifyUser(accessToken),
+          bootstrapSpotifyData(accessToken),
+        ]);
+        if (cancelled) return;
+        if (me) {
+          setUser(me);
+          setSpotifyUser(me);
+        }
+        setDataSummary(bootstrap);
+        setSpotifyBootstrap(bootstrap);
+      } catch (e) {
+        const msg = String((e as Error)?.message ?? e);
+        if (!cancelled) {
+          setBundleError("Spotify 정보를 불러오지 못했어요. 다시 시도해 주세요.");
+        }
+        if (
+          msg.toLowerCase().includes("invalid_grant") ||
+          msg.toLowerCase().includes("invalid refresh token") ||
+          msg.toLowerCase().includes("refresh token revoked") ||
+          msg.toLowerCase().includes("refresh token expired")
+        ) {
+          if (!cancelled) {
+            logout();
+            router.replace("/auth/spotify-login" as any);
+          }
+          return;
+        }
+      } finally {
+        if (!cancelled) setLoadingBundle(false);
+      }
+    };
+    run();
     return () => {
       cancelled = true;
     };
-  }, [tokens?.accessToken]);
+  }, [
+    logout,
+    reloadKey,
+    setTokens,
+    setSpotifyBootstrap,
+    setSpotifyUser,
+    tokens?.accessToken,
+    tokens?.expiresAt,
+    tokens?.refreshToken,
+  ]);
 
   const displayName = user?.display_name ?? "Spotify 사용자";
   const email = user?.email ?? "계정 정보 확인 중…";
@@ -107,11 +166,12 @@ export default function SpotifyPermissionsScreen() {
   }, [user?.product]);
 
   const onStart = async () => {
-    if (tokens?.accessToken) {
+    if (tokens?.accessToken && user && dataSummary && !loadingBundle && !bundleError) {
       if (user) setSpotifyUser(user);
+      if (dataSummary) setSpotifyBootstrap(dataSummary);
       router.replace({
         pathname: "/auth/spotify-linking",
-        params: { next: "/(tabs)?skipSync=1", mode: "bootstrap" },
+        params: { next: "/(tabs)?skipSync=1", mode: "ready" },
       } as any);
     }
   };
@@ -119,6 +179,10 @@ export default function SpotifyPermissionsScreen() {
   const onCancel = () => {
     logout();
     router.replace("/auth/login" as any);
+  };
+  const onRetryLoad = () => {
+    if (loadingBundle) return;
+    setReloadKey(v => v + 1);
   };
 
   return (
@@ -205,8 +269,8 @@ export default function SpotifyPermissionsScreen() {
               </Text>
               <Text style={s.userEmail}>{email}</Text>
               <Text style={[s.userBadge, { color: profileAccent }]}>
-                {loadingUser
-                  ? "프로필 확인 중…"
+                {loadingBundle
+                  ? "Spotify 데이터 확인 중…"
                   : user?.product
                     ? user.product === "premium"
                       ? "Premium"
@@ -215,6 +279,14 @@ export default function SpotifyPermissionsScreen() {
               </Text>
             </View>
           </View>
+          {bundleError ? (
+            <View style={s.loadErrorWrap}>
+              <Text style={s.loadError}>{bundleError}</Text>
+              <Pressable onPress={onRetryLoad} style={s.retryBtn}>
+                <Text style={s.retryText}>다시 불러오기</Text>
+              </Pressable>
+            </View>
+          ) : null}
 
           {/* Title */}
           <View style={s.titleBlock}>
@@ -264,8 +336,10 @@ export default function SpotifyPermissionsScreen() {
           <View style={s.actions}>
             <Pressable
               onPress={onStart}
+              disabled={loadingBundle || !user || !dataSummary || !!bundleError}
               style={({ pressed }) => [
                 s.primaryWrap,
+                (loadingBundle || !user || !dataSummary || !!bundleError) && s.primaryDisabled,
                 pressed
                   ? { transform: [{ scale: 0.985 }, { translateY: 1 }] }
                   : null,
@@ -284,7 +358,14 @@ export default function SpotifyPermissionsScreen() {
                       style={[StyleSheet.absoluteFill, s.pressOverlayDark]}
                     />
                   ) : null}
-                  <Text style={s.primaryText}>동의하고 MoodTune 시작하기</Text>
+                  {loadingBundle ? (
+                    <View style={s.primaryLoading}>
+                      <ActivityIndicator size="small" color="#082112" />
+                      <Text style={s.primaryText}>Spotify 정보 불러오는 중…</Text>
+                    </View>
+                  ) : (
+                    <Text style={s.primaryText}>동의하고 MoodTune 시작하기</Text>
+                  )}
                 </LinearGradient>
               )}
             </Pressable>
@@ -387,6 +468,7 @@ const s = StyleSheet.create({
     justifyContent: "space-between",
     gap: 14,
     overflow: "hidden",
+    paddingBottom: 14,
   },
   appLeft: { flexDirection: "row", alignItems: "center", gap: 12, flex: 1 },
   logoBox: {
@@ -409,6 +491,26 @@ const s = StyleSheet.create({
   userName: { fontSize: 16, fontWeight: "800", letterSpacing: -0.2 },
   userEmail: { color: C.t3, fontSize: 13, letterSpacing: -0.1 },
   userBadge: { fontSize: 12, fontWeight: "700" },
+  loadError: {
+    color: "rgba(255,120,120,0.92)",
+    fontSize: 12.5,
+    fontWeight: "600",
+  },
+  loadErrorWrap: { marginTop: 12, gap: 6 },
+  retryBtn: {
+    alignSelf: "flex-start",
+    borderRadius: 999,
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.20)",
+    backgroundColor: "rgba(255,255,255,0.06)",
+  },
+  retryText: {
+    color: "rgba(255,255,255,0.82)",
+    fontSize: 12.5,
+    fontWeight: "700",
+  },
 
   titleBlock: { gap: 10, marginTop: 6 },
   title: {
@@ -483,7 +585,13 @@ const s = StyleSheet.create({
 
   actions: { gap: 12, marginTop: 8, paddingTop: 8 },
   primaryWrap: { width: "100%", borderRadius: 999, overflow: "hidden" },
+  primaryDisabled: { opacity: 0.65 },
   primary: { height: 64, alignItems: "center", justifyContent: "center" },
+  primaryLoading: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
   primaryText: {
     color: "#000",
     fontSize: 18,

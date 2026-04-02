@@ -68,7 +68,16 @@ export default function PlaylistDetailScreen() {
     ) {
       return currentPlaylist;
     }
-    return playlists.find(p => p.id === id) ?? null;
+    const byId = playlists.find(p => p.id === id);
+    if (byId) return byId;
+    const sid = String(params.spotifyId ?? "").trim();
+    if (sid) {
+      const bySpotifyId = playlists.find(
+        p => String(p.spotifyId ?? "").trim() === sid,
+      );
+      if (bySpotifyId) return bySpotifyId;
+    }
+    return null;
   }, [currentPlaylist, id, params.spotifyId, playlists]);
 
   const fallbackFromParams: Playlist | null = useMemo(
@@ -154,7 +163,6 @@ export default function PlaylistDetailScreen() {
           list = await getSpotifyPlaylistTracks({
             accessToken,
             playlistId: current.spotifyId,
-            ownerId: current.ownerId ?? undefined,
             limit: 300,
           });
         } catch (firstErr) {
@@ -171,7 +179,6 @@ export default function PlaylistDetailScreen() {
           list = await getSpotifyPlaylistTracks({
             accessToken,
             playlistId: current.spotifyId,
-            ownerId: current.ownerId ?? undefined,
             limit: 300,
           });
         }
@@ -202,10 +209,20 @@ export default function PlaylistDetailScreen() {
       } catch (err) {
         const message = String((err as Error)?.message ?? err);
         if (message.includes("(403)")) {
-          // 403은 토큰/권한 상태가 바뀌면 풀릴 수 있어 영구 차단하지 않는다.
+          fetchedKeyRef.current = null;
+          const insufficientScope =
+            message.toLowerCase().includes("insufficient_scope") ||
+            message.includes("권한(scope) 부족");
+          setRemoteTrackError(
+            insufficientScope
+              ? "Spotify 읽기 권한(scope) 부족으로 트랙을 불러오지 못했어요. 다시 로그인해 주세요."
+              : "해당 플레이리스트에 접근할 수 없어 트랙을 불러오지 못했어요. 삭제되었거나 접근 권한이 변경되었을 수 있어요.",
+          );
+        }
+        if (message.includes("(404)")) {
           fetchedKeyRef.current = null;
           setRemoteTrackError(
-            "Spotify 읽기 권한 부족으로 트랙을 불러오지 못했어요. Spotify를 다시 로그인해 주세요.",
+            "해당 플레이리스트를 찾을 수 없어요. 이미 삭제되었을 수 있어요.",
           );
         }
         if (message.includes("(429)") || message.includes("cooling down")) {
@@ -221,7 +238,7 @@ export default function PlaylistDetailScreen() {
         if (!message.includes("(429)") && !message.includes("cooling down")) {
           fetchedKeyRef.current = null;
         }
-        console.warn("[playlist-detail] remote tracks load failed.");
+        console.warn(`[playlist-detail] remote tracks load failed: ${message}`);
       } finally {
         if (!cancelled) setLoadingRemoteTracks(false);
       }

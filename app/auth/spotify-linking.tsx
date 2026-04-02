@@ -17,7 +17,7 @@ import {
   View,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import Svg, { Circle, Path } from "react-native-svg";
+import Svg, { Path } from "react-native-svg";
 import {
   bootstrapSpotifyData,
   getSpotifyUser,
@@ -25,6 +25,16 @@ import {
 } from "../../src/api/spotify.service";
 import { useAppStore } from "../../src/store/useAppStore";
 import { SpotifyBootstrapData, SpotifyUser } from "../../src/types";
+
+function isHardRefreshTokenInvalid(message: string): boolean {
+  const msg = String(message ?? "").toLowerCase();
+  return (
+    msg.includes("invalid_grant") ||
+    msg.includes("invalid refresh token") ||
+    msg.includes("refresh token revoked") ||
+    msg.includes("refresh token expired")
+  );
+}
 
 const { width: W } = Dimensions.get("window");
 
@@ -40,7 +50,7 @@ const C = {
   cardBg2: "rgba(255,255,255,0.03)",
 };
 
-type Stage = 0 | 1 | 2 | 3;
+type Step = 1 | 2 | 3;
 
 export default function SpotifyLinkingScreen() {
   const insets = useSafeAreaInsets();
@@ -51,16 +61,15 @@ export default function SpotifyLinkingScreen() {
   }>();
 
   const nextPath = typeof params.next === "string" ? params.next : "/(tabs)";
-  const mode = typeof params.mode === "string" ? params.mode : "demo";
-  const totalMs = useMemo(() => {
-    const n = Number(params.ms ?? 3600);
-    if (!Number.isFinite(n)) return 3600;
-    return Math.max(1200, Math.min(15000, Math.floor(n)));
-  }, [params.ms]);
+  const mode = typeof params.mode === "string" ? params.mode : "ready";
+  const cachedProfile = useAppStore(s => s.spotifyUser);
+  const cachedBootstrap = useAppStore(s => s.spotifyBootstrap);
 
-  const [stage, setStage] = useState<Stage>(0);
-  const [profile, setProfile] = useState<SpotifyUser | null>(null);
-  const [dataSummary, setDataSummary] = useState<SpotifyBootstrapData | null>(null);
+  const [stage, setStage] = useState<Step>(1);
+  const [profile, setProfile] = useState<SpotifyUser | null>(cachedProfile);
+  const [dataSummary, setDataSummary] = useState<SpotifyBootstrapData | null>(
+    cachedBootstrap,
+  );
   const [showDone, setShowDone] = useState(false);
   const tokens = useAppStore(s => s.spotifyTokens);
   const setTokens = useAppStore(s => s.setTokens);
@@ -74,6 +83,13 @@ export default function SpotifyLinkingScreen() {
   const doneScale = useRef(new Animated.Value(0.9)).current;
   const dotCount = 6;
   const dots = useMemo(() => Array.from({ length: dotCount }, (_, i) => i), []);
+  const stepTitle = showDone
+    ? "연결 완료"
+    : stage === 1
+      ? "보안 검증"
+      : stage === 2
+        ? "데이터 동기화"
+        : "최종 준비";
 
   const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
   const ensureMinElapsed = async (startedAt: number, minMs: number) => {
@@ -101,8 +117,16 @@ export default function SpotifyLinkingScreen() {
   useEffect(() => {
     const loop = Animated.loop(
       Animated.sequence([
-        Animated.timing(dotT, { toValue: 1, duration: 1200, useNativeDriver: true }),
-        Animated.timing(dotT, { toValue: 0, duration: 0, useNativeDriver: true }),
+        Animated.timing(dotT, {
+          toValue: 1,
+          duration: 1200,
+          useNativeDriver: true,
+        }),
+        Animated.timing(dotT, {
+          toValue: 0,
+          duration: 0,
+          useNativeDriver: true,
+        }),
       ]),
     );
     loop.start();
@@ -111,40 +135,27 @@ export default function SpotifyLinkingScreen() {
 
   useEffect(() => {
     Animated.timing(progressT, {
-      toValue: stage / 3,
+      toValue: showDone ? 1 : (stage - 1) / 2,
       duration: 340,
       useNativeDriver: false,
     }).start();
-  }, [progressT, stage]);
+  }, [progressT, showDone, stage]);
 
   useEffect(() => {
-    if (mode !== "bootstrap") {
-      const t1 = setTimeout(() => setStage(1), Math.round(totalMs * 0.22));
-      const t2 = setTimeout(() => setStage(2), Math.round(totalMs * 0.48));
-      const t3 = setTimeout(() => setStage(3), Math.round(totalMs * 0.74));
-      const t4 = setTimeout(() => {
-        router.replace(nextPath as any);
-      }, totalMs);
-      return () => {
-        clearTimeout(t1);
-        clearTimeout(t2);
-        clearTimeout(t3);
-        clearTimeout(t4);
-      };
-    }
-
     let cancelled = false;
-    const startedAt = Date.now();
+    const runStep = async (
+      step: Step,
+      worker: () => Promise<void>,
+      minMs: number,
+    ) => {
+      const startedAt = Date.now();
+      setStage(step);
+      await worker();
+      await ensureMinElapsed(startedAt, minMs);
+    };
 
     const run = async () => {
       try {
-        // Stage 0: secure channel
-        setStage(0);
-        await wait(520);
-
-        // Stage 1: credentials check (fetch profile)
-        const stage1StartedAt = Date.now();
-        setStage(1);
         if (!tokens?.accessToken || !tokens.refreshToken) {
           router.replace("/auth/spotify-login" as any);
           return;
@@ -152,47 +163,73 @@ export default function SpotifyLinkingScreen() {
 
         let accessToken = tokens.accessToken;
         if (tokens.expiresAt && Date.now() > tokens.expiresAt - 30_000) {
-          const refreshed = await refreshSpotifyAccessToken({
-            refreshToken: tokens.refreshToken,
-          });
-          if (cancelled) return;
-          setTokens(refreshed);
-          accessToken = refreshed.accessToken;
+          try {
+            const refreshed = await refreshSpotifyAccessToken({
+              refreshToken: tokens.refreshToken,
+            });
+            if (cancelled) return;
+            setTokens(refreshed);
+            accessToken = refreshed.accessToken;
+          } catch (refreshErr) {
+            const refreshMsg = String(
+              (refreshErr as Error)?.message ?? refreshErr,
+            );
+            if (isHardRefreshTokenInvalid(refreshMsg)) {
+              if (!cancelled) router.replace("/auth/spotify-login" as any);
+              return;
+            }
+          }
         }
 
-        const me = await getSpotifyUser(accessToken);
+        await runStep(
+          1,
+          async () => {
+            if (mode !== "bootstrap" && profile) return;
+            const me = await getSpotifyUser(accessToken);
+            if (cancelled) return;
+            if (me) {
+              setSpotifyUser(me);
+              setProfile(me);
+            }
+          },
+          760,
+        );
         if (cancelled) return;
-        if (me) {
-          setSpotifyUser(me);
-          setProfile(me);
-        }
-        await ensureMinElapsed(stage1StartedAt, 850);
 
-        // Stage 2: collect Spotify library bootstrap data
-        const stage2StartedAt = Date.now();
-        setStage(2);
-        const bootstrap = await bootstrapSpotifyData(accessToken);
+        await runStep(
+          2,
+          async () => {
+            if (mode !== "bootstrap" && dataSummary) return;
+            const bootstrap = await bootstrapSpotifyData(accessToken);
+            if (cancelled) return;
+            setSpotifyBootstrap(bootstrap);
+            setDataSummary(bootstrap);
+          },
+          960,
+        );
         if (cancelled) return;
-        setSpotifyBootstrap(bootstrap);
-        setDataSummary(bootstrap);
-        await ensureMinElapsed(stage2StartedAt, 1200);
 
-        // Stage 3: finalize
-        setStage(3);
-        await wait(480);
+        await runStep(
+          3,
+          async () => {
+            await wait(420);
+          },
+          740,
+        );
+        if (cancelled) return;
+
         setShowDone(true);
         await playDoneMotion();
-        await wait(380);
-
-        const minShow = 2400;
-        const elapsed = Date.now() - startedAt;
-        if (elapsed < minShow) {
-          await wait(minShow - elapsed);
-        }
+        await wait(1000);
         if (!cancelled) router.replace(nextPath as any);
       } catch (e) {
-        console.warn("[spotify-linking] bootstrap failed.");
-        if (!cancelled) router.replace("/auth/spotify-login" as any);
+        const msg = String((e as Error)?.message ?? e);
+        console.warn(`[spotify-linking] bootstrap failed: ${msg}`);
+        if (!cancelled && isHardRefreshTokenInvalid(msg)) {
+          router.replace("/auth/spotify-login" as any);
+          return;
+        }
+        if (!cancelled) router.replace(nextPath as any);
       }
     };
 
@@ -203,18 +240,25 @@ export default function SpotifyLinkingScreen() {
   }, [
     mode,
     nextPath,
-    totalMs,
     setSpotifyBootstrap,
     setSpotifyUser,
     setTokens,
     tokens?.accessToken,
     tokens?.expiresAt,
     tokens?.refreshToken,
+    profile,
+    dataSummary,
   ]);
 
   return (
-    <View style={[s.root, { paddingTop: insets.top, paddingBottom: insets.bottom }]}>
-      <StatusBar barStyle="light-content" translucent backgroundColor="transparent" />
+    <View
+      style={[s.root, { paddingTop: insets.top, paddingBottom: insets.bottom }]}
+    >
+      <StatusBar
+        barStyle="light-content"
+        translucent
+        backgroundColor="transparent"
+      />
 
       {/* Background */}
       <LinearGradient
@@ -224,7 +268,11 @@ export default function SpotifyLinkingScreen() {
       />
       <LinearGradient
         pointerEvents="none"
-        colors={["rgba(61,220,132,0.15)", "rgba(61,220,132,0.05)", "rgba(0,0,0,0)"]}
+        colors={[
+          "rgba(61,220,132,0.15)",
+          "rgba(61,220,132,0.05)",
+          "rgba(0,0,0,0)",
+        ]}
         start={{ x: 0.05, y: 0.05 }}
         end={{ x: 0.85, y: 0.95 }}
         style={[StyleSheet.absoluteFill, { opacity: 0.75 }]}
@@ -241,7 +289,10 @@ export default function SpotifyLinkingScreen() {
 
           <View style={s.dotRow}>
             {dots.map(i => {
-              const local = Animated.modulo(Animated.add(dotT, i / dotCount), 1);
+              const local = Animated.modulo(
+                Animated.add(dotT, i / dotCount),
+                1,
+              );
               const opacity = local.interpolate({
                 inputRange: [0, 0.3, 1],
                 outputRange: [0.25, 1, 0.25],
@@ -267,8 +318,8 @@ export default function SpotifyLinkingScreen() {
             />
             <Image
               source={require("../../assets/images/moodtune-logo.png")}
-              resizeMode="contain"
-              style={{ width: 44, height: 44 }}
+              resizeMode="cover"
+              style={s.mtLogo}
             />
           </View>
         </View>
@@ -278,7 +329,15 @@ export default function SpotifyLinkingScreen() {
           <Text style={s.title}>
             <Text style={{ fontWeight: "900" }}>Spotify</Text> 계정 연결 중
           </Text>
-          <Text style={s.sub}>로그인 정보와 음악 데이터를 안전하게 동기화하고 있어요</Text>
+          <Text style={s.sub}>
+            안전하게 연결하고 맞춤 추천 준비를 진행하고 있어요
+          </Text>
+          <View style={s.stepHeadlineWrap}>
+            <Text style={s.stepHeadlineLeft}>
+              {showDone ? "3/3 완료" : `${stage}/3 단계`}
+            </Text>
+            <Text style={s.stepHeadlineRight}>{stepTitle}</Text>
+          </View>
         </View>
 
         <View style={s.profileCard}>
@@ -289,40 +348,66 @@ export default function SpotifyLinkingScreen() {
           <View style={s.profileHeader}>
             <Text style={s.profileTitle}>연결된 계정</Text>
             <Text style={s.profileBadge}>
-              {profile?.product === "premium" ? "Premium" : profile ? "Free" : "확인 중"}
+              {profile?.product === "premium"
+                ? "Premium"
+                : profile
+                  ? "Free"
+                  : "확인 중"}
             </Text>
           </View>
-          <Text style={s.profileName}>{profile?.display_name ?? "Spotify 사용자 확인 중..."}</Text>
-          <Text style={s.profileEmail}>{profile?.email ?? "이메일 확인 중..."}</Text>
+          <Text style={s.profileName}>
+            {profile?.display_name ?? "Spotify 사용자 확인 중..."}
+          </Text>
+          <Text style={s.profileEmail}>
+            {profile?.email ?? "이메일 확인 중..."}
+          </Text>
           <View style={s.summaryRow}>
-            <Text style={s.summaryItem}>Top Tracks {dataSummary?.topTracks.length ?? 0}</Text>
-            <Text style={s.summaryItem}>Top Artists {dataSummary?.topArtists.length ?? 0}</Text>
-            <Text style={s.summaryItem}>Playlists {dataSummary?.playlists.length ?? 0}</Text>
+            <View style={s.summaryItem}>
+              <Text style={s.summaryLabel} numberOfLines={1}>
+                Top Tracks
+              </Text>
+              <Text style={s.summaryValue} numberOfLines={1}>
+                {dataSummary?.topTracks.length ?? 0}
+              </Text>
+            </View>
+            <View style={s.summaryItem}>
+              <Text style={s.summaryLabel} numberOfLines={1}>
+                Top Artists
+              </Text>
+              <Text style={s.summaryValue} numberOfLines={1}>
+                {dataSummary?.topArtists.length ?? 0}
+              </Text>
+            </View>
+            <View style={s.summaryItem}>
+              <Text style={s.summaryLabel} numberOfLines={1}>
+                Playlists
+              </Text>
+              <Text style={s.summaryValue} numberOfLines={1}>
+                {dataSummary?.playlists.length ?? 0}
+              </Text>
+            </View>
           </View>
         </View>
 
         {/* Steps */}
         <View style={s.steps}>
           <StepCard
-            state={stage >= 0 ? "done" : "pending"}
-            label="보안 HTTPS 채널 연결"
-            accent={C.green}
+            index={1}
+            active={!showDone && stage === 1}
+            done={showDone || stage > 1}
+            label="계정 인증 및 보안 검증"
           />
           <StepCard
-            state={stage > 1 ? "done" : stage === 1 ? "active" : "pending"}
-            label="계정 프로필 확인"
-            accent={C.green}
+            index={2}
+            active={!showDone && stage === 2}
+            done={showDone || stage > 2}
+            label="취향 데이터 안전 동기화"
           />
           <StepCard
-            state={stage > 2 ? "done" : stage === 2 ? "active" : "pending"}
-            label="Spotify 데이터 동기화 (Top 트랙/아티스트/플레이리스트)"
-            accent={C.green}
-          />
-          <StepCard
-            state={stage >= 3 ? "done" : "pending"}
-            label="MoodTune 시작 화면 준비"
-            accent={C.green}
-            dim
+            index={3}
+            active={!showDone && stage === 3}
+            done={showDone}
+            label="맞춤 플레이리스트 준비 완료"
           />
         </View>
 
@@ -341,7 +426,11 @@ export default function SpotifyLinkingScreen() {
               ]}
             />
             <LinearGradient
-              colors={["rgba(61,220,132,0.0)", "rgba(61,220,132,0.35)", "rgba(61,220,132,0.0)"]}
+              colors={[
+                "rgba(61,220,132,0.0)",
+                "rgba(61,220,132,0.35)",
+                "rgba(61,220,132,0.0)",
+              ]}
               start={{ x: 0, y: 0 }}
               end={{ x: 1, y: 0 }}
               style={[StyleSheet.absoluteFill, { opacity: 0.55 }]}
@@ -356,12 +445,15 @@ export default function SpotifyLinkingScreen() {
         {showDone ? (
           <Animated.View
             style={[
-              s.doneWrap,
+              s.donePanel,
               { opacity: doneOpacity, transform: [{ scale: doneScale }] },
             ]}
           >
-            <Text style={s.doneCheck}>✓</Text>
-            <Text style={s.doneText}>연결 완료, 메인으로 이동합니다</Text>
+            <View style={s.doneCheckWrap}>
+              <Text style={s.doneCheck}>✓</Text>
+            </View>
+            <Text style={s.doneTitle}>3/3 완료 · 연결이 완료되었습니다</Text>
+            <Text style={s.doneSub}>MoodTune 홈으로 안전하게 이동합니다</Text>
           </Animated.View>
         ) : null}
       </View>
@@ -370,47 +462,65 @@ export default function SpotifyLinkingScreen() {
 }
 
 function StepCard({
-  state,
+  index,
+  active,
+  done,
   label,
-  accent,
-  dim,
 }: {
-  state: "done" | "active" | "pending";
+  index: number;
+  active: boolean;
+  done: boolean;
   label: string;
-  accent: string;
-  dim?: boolean;
 }) {
-  const isDone = state === "done";
-  const isActive = state === "active";
-  const isPending = state === "pending";
-  const textColor = isPending ? "rgba(255,255,255,0.28)" : "rgba(255,255,255,0.80)";
-  const dotBg = isPending ? "rgba(255,255,255,0.14)" : accent;
+  const textColor = done || active
+    ? "rgba(255,255,255,0.84)"
+    : "rgba(255,255,255,0.30)";
 
   return (
-    <View style={[s.card, dim ? { opacity: 0.72 } : null]}>
+    <View style={s.card}>
       <LinearGradient
         colors={[C.cardBg1, C.cardBg2]}
         style={[StyleSheet.absoluteFill, { borderRadius: 16 }]}
       />
       <View style={s.cardLeft}>
-        {isDone ? (
-          <View style={[s.cardDot, { backgroundColor: dotBg }]}>
+        {done ? (
+          <View style={[s.cardDot, { backgroundColor: C.green }]}>
             <Text style={s.check}>✓</Text>
           </View>
-        ) : isActive ? (
-          <View style={[s.cardDot, { backgroundColor: "rgba(61,220,132,0.22)" }]}>
-            <ActivityIndicator size="small" color={accent} />
+        ) : active ? (
+          <View
+            style={[s.cardDot, { backgroundColor: "rgba(61,220,132,0.22)" }]}
+          >
+            <ActivityIndicator size="small" color={C.green} />
           </View>
         ) : (
-          <View style={[s.cardDot, { backgroundColor: "transparent", borderColor: dotBg, borderWidth: 2 }]} />
+          <View
+            style={[
+              s.cardDot,
+              {
+                backgroundColor: "transparent",
+                borderColor: "rgba(255,255,255,0.18)",
+                borderWidth: 2,
+              },
+            ]}
+          >
+            <Text style={s.stepNo}>{index}</Text>
+          </View>
         )}
       </View>
       <Text style={[s.cardText, { color: textColor }]}>{label}</Text>
+      <Text style={s.cardStatus}>{done ? "완료" : active ? "진행중" : "대기"}</Text>
     </View>
   );
 }
 
-function SpotifyGlyph({ size = 24, color = "#fff" }: { size?: number; color?: string }) {
+function SpotifyGlyph({
+  size = 24,
+  color = "#fff",
+}: {
+  size?: number;
+  color?: string;
+}) {
   const d1 =
     "M5.2 9.4c4.4-1.2 9.4-.9 13.5 1.1.4.2.6.7.4 1.1-.2.4-.7.6-1.1.4-3.7-1.8-8.3-2.1-12.3-1-.4.1-.9-.1-1-.6-.1-.4.1-.9.5-1z";
   const d2 =
@@ -500,6 +610,11 @@ const s = StyleSheet.create({
     shadowOffset: { width: 0, height: 0 },
     elevation: 8,
   },
+  mtLogo: {
+    width: "110%",
+    height: "110%",
+    transform: [{ scale: 1.04 }],
+  },
   dotRow: { flexDirection: "row", alignItems: "center", gap: 8 },
   dot: {
     width: 10,
@@ -519,6 +634,29 @@ const s = StyleSheet.create({
     color: C.t2,
     letterSpacing: -0.2,
   },
+  stepHeadlineWrap: {
+    marginTop: 2,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "rgba(61,220,132,0.26)",
+    backgroundColor: "rgba(61,220,132,0.10)",
+    paddingVertical: 5,
+    paddingHorizontal: 10,
+  },
+  stepHeadlineLeft: {
+    color: C.green,
+    fontSize: 12,
+    fontWeight: "900",
+    letterSpacing: -0.1,
+  },
+  stepHeadlineRight: {
+    color: "rgba(255,255,255,0.84)",
+    fontSize: 12.5,
+    fontWeight: "700",
+  },
   steps: { width: "100%", gap: 12, marginTop: 4 },
   profileCard: {
     width: "100%",
@@ -530,21 +668,44 @@ const s = StyleSheet.create({
     gap: 8,
     overflow: "hidden",
   },
-  profileHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
+  profileHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
   profileTitle: { color: C.t2, fontSize: 12, fontWeight: "700" },
   profileBadge: { color: C.green, fontSize: 12, fontWeight: "800" },
-  profileName: { color: C.t1, fontSize: 18, fontWeight: "800", letterSpacing: -0.2 },
+  profileName: {
+    color: C.t1,
+    fontSize: 18,
+    fontWeight: "800",
+    letterSpacing: -0.2,
+  },
   profileEmail: { color: C.t2, fontSize: 13.5 },
-  summaryRow: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 2 },
+  summaryRow: { flexDirection: "row", gap: 8, marginTop: 4 },
   summaryItem: {
-    color: "rgba(255,255,255,0.76)",
-    fontSize: 12.5,
+    flex: 1,
+    minHeight: 48,
     paddingHorizontal: 8,
-    paddingVertical: 5,
+    paddingVertical: 7,
     borderRadius: 999,
     borderWidth: 1,
     borderColor: "rgba(255,255,255,0.14)",
     backgroundColor: "rgba(255,255,255,0.06)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  summaryLabel: {
+    color: "rgba(255,255,255,0.62)",
+    fontSize: 10.5,
+    fontWeight: "700",
+    letterSpacing: -0.1,
+  },
+  summaryValue: {
+    color: "rgba(255,255,255,0.92)",
+    fontSize: 14,
+    fontWeight: "800",
+    lineHeight: 18,
   },
   card: {
     width: "100%",
@@ -568,7 +729,9 @@ const s = StyleSheet.create({
     justifyContent: "center",
   },
   check: { color: "#06120b", fontSize: 14, fontWeight: "900" },
+  stepNo: { color: "rgba(255,255,255,0.56)", fontSize: 11, fontWeight: "800" },
   cardText: { flex: 1, fontSize: 15, fontWeight: "700", letterSpacing: -0.2 },
+  cardStatus: { color: "rgba(255,255,255,0.52)", fontSize: 11.5, fontWeight: "700" },
   bottom: { width: "100%", alignItems: "center", gap: 18, marginTop: 12 },
   progressTrack: {
     width: "88%",
@@ -585,20 +748,45 @@ const s = StyleSheet.create({
     borderRadius: 4,
     backgroundColor: "rgba(61,220,132,0.35)",
   },
-  note: { textAlign: "center", color: "rgba(255,255,255,0.34)", fontSize: 13.5, letterSpacing: -0.1 },
-  doneWrap: {
-    marginTop: 4,
+  note: {
+    textAlign: "center",
+    color: "rgba(255,255,255,0.34)",
+    fontSize: 13.5,
+    letterSpacing: -0.1,
+  },
+  donePanel: {
+    marginTop: 8,
     alignSelf: "center",
-    flexDirection: "row",
+    width: "100%",
     alignItems: "center",
-    gap: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 999,
+    justifyContent: "center",
+    gap: 6,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    borderRadius: 16,
     borderWidth: 1,
     borderColor: "rgba(61,220,132,0.45)",
-    backgroundColor: "rgba(61,220,132,0.15)",
+    backgroundColor: "rgba(61,220,132,0.13)",
   },
-  doneCheck: { color: "#05200f", fontSize: 14, fontWeight: "900", backgroundColor: C.green, borderRadius: 12, width: 18, height: 18, textAlign: "center", lineHeight: 18 },
-  doneText: { color: "rgba(255,255,255,0.92)", fontSize: 13, fontWeight: "700" },
+  doneCheckWrap: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(61,220,132,0.18)",
+  },
+  doneCheck: {
+    color: "#05200f",
+    fontSize: 17,
+    fontWeight: "900",
+    backgroundColor: C.green,
+    borderRadius: 12,
+    width: 22,
+    height: 22,
+    textAlign: "center",
+    lineHeight: 22,
+  },
+  doneTitle: { color: "rgba(255,255,255,0.95)", fontSize: 15, fontWeight: "900" },
+  doneSub: { color: "rgba(255,255,255,0.64)", fontSize: 12.5, fontWeight: "600" },
 });

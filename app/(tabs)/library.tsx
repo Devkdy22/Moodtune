@@ -6,6 +6,7 @@ import { router } from "expo-router";
 import { Music4 } from "lucide-react-native";
 import { useFocusEffect } from "@react-navigation/native";
 import React, { useCallback, useEffect, useMemo, useState } from "react";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import {
   Alert,
   FlatList,
@@ -23,6 +24,7 @@ import { Colors } from "../../src/constants/colors";
 import { FontSize } from "../../src/constants/layout";
 import {
   getMoodtuneCreatedPlaylists,
+  invalidateMoodtunePlaylistCache,
   removeSpotifyPlaylist,
   refreshSpotifyAccessToken,
 } from "../../src/api/spotify.service";
@@ -30,6 +32,9 @@ import { useAppStore } from "../../src/store/useAppStore";
 import { Playlist } from "../../src/types";
 
 const FILTER_TABS = ["전체", "최근", "좋아요"];
+function hiddenPlaylistIdsKey(userId: string): string {
+  return `moodtune:hidden_spotify_playlist_ids:${userId}`;
+}
 
 function estimateDurationLabel(trackCount: number): string {
   const min = Math.max(12, trackCount * 4);
@@ -55,7 +60,32 @@ export default function LibraryScreen() {
   const [selectionMode, setSelectionMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [reloadTick, setReloadTick] = useState(0);
+  const [hiddenSpotifyIds, setHiddenSpotifyIds] = useState<Set<string>>(new Set());
   const userName = spotifyUser?.display_name || "사용자";
+
+  useEffect(() => {
+    let cancelled = false;
+    async function loadHiddenIds() {
+      const uid = String(spotifyUser?.id ?? "").trim();
+      if (!uid) {
+        if (!cancelled) setHiddenSpotifyIds(new Set());
+        return;
+      }
+      try {
+        const raw = await AsyncStorage.getItem(hiddenPlaylistIdsKey(uid));
+        const parsed = raw ? (JSON.parse(raw) as string[]) : [];
+        if (!cancelled) {
+          setHiddenSpotifyIds(new Set(parsed.map(v => String(v ?? "").trim()).filter(Boolean)));
+        }
+      } catch {
+        if (!cancelled) setHiddenSpotifyIds(new Set());
+      }
+    }
+    loadHiddenIds();
+    return () => {
+      cancelled = true;
+    };
+  }, [spotifyUser?.id]);
 
   useFocusEffect(
     useCallback(() => {
@@ -94,8 +124,11 @@ export default function LibraryScreen() {
         const ownedList = spotifyUser?.id
           ? list.filter(p => p.owner_id === spotifyUser.id)
           : list;
+        const visible = ownedList.filter(
+          p => !hiddenSpotifyIds.has(String(p?.id ?? "").trim()),
+        );
         if (cancelled) return;
-        setRemotePlaylists(ownedList.map(mapToPlaylist));
+        setRemotePlaylists(visible.map(mapToPlaylist));
       };
 
       try {
@@ -123,6 +156,7 @@ export default function LibraryScreen() {
       cancelled = true;
     };
   }, [
+    hiddenSpotifyIds,
     reloadTick,
     setTokens,
     spotifyTokens?.accessToken,
@@ -130,7 +164,41 @@ export default function LibraryScreen() {
     spotifyUser?.id,
   ]);
 
-  const mergedPlaylists = useMemo(() => remotePlaylists, [remotePlaylists]);
+  const mergedPlaylists = useMemo(() => {
+    const bySpotifyId = new Map<string, Playlist>();
+    const locals = playlists ?? [];
+
+    const mergedRemote = remotePlaylists.map(remote => {
+      const sid = String(remote.spotifyId ?? "").trim();
+      const localMatch = sid
+        ? locals.find(p => String(p.spotifyId ?? "").trim() === sid)
+        : null;
+      if (!localMatch) return remote;
+      return {
+        ...remote,
+        // 원격 목록 id는 유지하되, 상세에서 트랙 표시를 위해 로컬 스냅샷을 우선 사용.
+        liked: localMatch.liked,
+        tracks: localMatch.tracks?.length ? localMatch.tracks : remote.tracks,
+        trackCount: localMatch.trackCount || remote.trackCount,
+        duration: localMatch.duration || remote.duration,
+        moodInput: localMatch.moodInput ?? remote.moodInput,
+      };
+    });
+
+    mergedRemote.forEach(item => {
+      const sid = String(item.spotifyId ?? "").trim();
+      if (sid) bySpotifyId.set(sid, item);
+    });
+
+    const localOnly = locals.filter(local => {
+      const sid = String(local.spotifyId ?? "").trim();
+      if (!sid) return true;
+      if (hiddenSpotifyIds.has(sid)) return false;
+      return !bySpotifyId.has(sid);
+    });
+
+    return [...mergedRemote, ...localOnly];
+  }, [hiddenSpotifyIds, playlists, remotePlaylists]);
 
   const filtered = mergedPlaylists.filter(p => {
     if (activeFilter === "좋아요") return p.liked;
@@ -178,6 +246,19 @@ export default function LibraryScreen() {
           } catch (err) {
             console.warn("[library] spotify playlist remove failed.");
           } finally {
+            if (item.spotifyId && spotifyUser?.id) {
+              const sid = String(item.spotifyId).trim();
+              setHiddenSpotifyIds(prev => {
+                const next = new Set(prev);
+                next.add(sid);
+                AsyncStorage.setItem(
+                  hiddenPlaylistIdsKey(spotifyUser.id),
+                  JSON.stringify(Array.from(next)),
+                ).catch(() => {});
+                return next;
+              });
+            }
+            invalidateMoodtunePlaylistCache();
             removePlaylist(id);
             const localMatch = playlists.find(p => p.spotifyId === item.spotifyId);
             if (localMatch) removePlaylist(localMatch.id);
@@ -227,12 +308,25 @@ export default function LibraryScreen() {
               } catch (err) {
                 console.warn("[library] bulk spotify remove failed.");
               } finally {
+                if (item.spotifyId && spotifyUser?.id) {
+                  const sid = String(item.spotifyId).trim();
+                  setHiddenSpotifyIds(prev => {
+                    const next = new Set(prev);
+                    next.add(sid);
+                    AsyncStorage.setItem(
+                      hiddenPlaylistIdsKey(spotifyUser.id),
+                      JSON.stringify(Array.from(next)),
+                    ).catch(() => {});
+                    return next;
+                  });
+                }
                 removePlaylist(item.id);
                 const localMatch = playlists.find(p => p.spotifyId === item.spotifyId);
                 if (localMatch) removePlaylist(localMatch.id);
                 setRemotePlaylists(prev => prev.filter(p => p.id !== item.id));
               }
             }
+            invalidateMoodtunePlaylistCache();
             setSelectedIds([]);
             setSelectionMode(false);
           },

@@ -291,7 +291,7 @@ export default function SpotifyConnectScreen() {
     // "사용자 데이터 가져오는 동안" 연결 화면으로 이동
     router.replace({
       pathname: "/auth/spotify-linking",
-      params: { next: "/(tabs)", ms: "3600" },
+      params: { next: "/(tabs)", mode: "ready" },
     } as any);
   };
 
@@ -324,18 +324,18 @@ export default function SpotifyConnectScreen() {
         {/* 하단 구분선 */}
         <View style={st.headerSep} />
 
-          <View style={st.headerInner}>
-            {/* 뒤로가기 버튼 */}
-            <Pressable
-              onPress={() => router.back()}
-              style={({ pressed }) => [
-                st.backBtn,
-                pressed ? { opacity: 0.72, transform: [{ scale: 0.96 }] } : null,
-              ]}
-              hitSlop={10}
-            >
-              <Text style={st.backArrow}>←</Text>
-            </Pressable>
+        <View style={st.headerInner}>
+          {/* 뒤로가기 버튼 */}
+          <Pressable
+            onPress={() => router.back()}
+            style={({ pressed }) => [
+              st.backBtn,
+              pressed ? { opacity: 0.72, transform: [{ scale: 0.96 }] } : null,
+            ]}
+            hitSlop={10}
+          >
+            <Text style={st.backArrow}>←</Text>
+          </Pressable>
 
           {/* Spotify 아이콘 + 타이틀 */}
           <View style={st.headerCenter}>
@@ -393,7 +393,7 @@ export default function SpotifyConnectScreen() {
                 {/* 실제 앱: <Image source={require('../../assets/logo.png')} style={st.logoImg} /> */}
                 <Image
                   source={require("../../assets/images/moodtune-logo.png")}
-                  resizeMode="contain"
+                  resizeMode="cover"
                   style={st.logoImg}
                 />
                 <Text style={st.logoLabel}>Moodtune</Text>
@@ -508,7 +508,9 @@ export default function SpotifyConnectScreen() {
                   onPress={() => setShowPw(!showPw)}
                   style={({ pressed }) => [
                     st.eyeBtn,
-                    pressed ? { opacity: 0.7, transform: [{ scale: 0.96 }] } : null,
+                    pressed
+                      ? { opacity: 0.7, transform: [{ scale: 0.96 }] }
+                      : null,
                   ]}
                   hitSlop={10}
                 >
@@ -562,53 +564,56 @@ export default function SpotifyConnectScreen() {
                       style={[StyleSheet.absoluteFill, st.pressOverlayDark]}
                     />
                   ) : null}
-                {/* shimmer (활성 상태에서만) */}
-                {canSubmit && !loginDone && (
-                  <Animated.View
-                    pointerEvents="none"
-                    style={[
-                      st.shimmer,
-                      {
-                        transform: [{ translateX: shimX }, { skewX: "-22deg" }],
-                      },
-                    ]}
-                  />
-                )}
+                  {/* shimmer (활성 상태에서만) */}
+                  {canSubmit && !loginDone && (
+                    <Animated.View
+                      pointerEvents="none"
+                      style={[
+                        st.shimmer,
+                        {
+                          transform: [
+                            { translateX: shimX },
+                            { skewX: "-22deg" },
+                          ],
+                        },
+                      ]}
+                    />
+                  )}
 
-                {loginDone ? (
-                  /* 성공 체크 아이콘 */
-                  <Animated.View
-                    style={{
-                      transform: [{ scale: checkScale }],
-                      opacity: checkOp,
-                    }}
-                  >
-                    <Text style={{ fontSize: 22 }}>✓</Text>
-                  </Animated.View>
-                ) : loading ? (
-                  <ActivityIndicator color="#000" size="small" />
-                ) : (
-                  <>
+                  {loginDone ? (
+                    /* 성공 체크 아이콘 */
                     <Animated.View
                       style={{
-                        opacity: btnSuccessOp,
-                        flexDirection: "row",
-                        alignItems: "center",
-                        gap: 10,
+                        transform: [{ scale: checkScale }],
+                        opacity: checkOp,
                       }}
                     >
-                      <SpotifyIcon size={20} color="#07110c" />
-                      <Text
-                        style={[
-                          st.loginBtnText,
-                          !canSubmit && { color: "rgba(255,255,255,0.35)" },
-                        ]}
-                      >
-                        로그인
-                      </Text>
+                      <Text style={{ fontSize: 22 }}>✓</Text>
                     </Animated.View>
-                  </>
-                )}
+                  ) : loading ? (
+                    <ActivityIndicator color="#000" size="small" />
+                  ) : (
+                    <>
+                      <Animated.View
+                        style={{
+                          opacity: btnSuccessOp,
+                          flexDirection: "row",
+                          alignItems: "center",
+                          gap: 10,
+                        }}
+                      >
+                        <SpotifyIcon size={20} color="#07110c" />
+                        <Text
+                          style={[
+                            st.loginBtnText,
+                            !canSubmit && { color: "rgba(255,255,255,0.35)" },
+                          ]}
+                        >
+                          로그인
+                        </Text>
+                      </Animated.View>
+                    </>
+                  )}
                 </LinearGradient>
               )}
             </Pressable>
@@ -774,9 +779,10 @@ const st = StyleSheet.create({
     borderColor: "rgba(61,220,132,0.30)",
   },
   logoImg: {
-    width: 54,
-    height: 48,
-    resizeMode: "contain",
+    width: 56,
+    height: 56,
+    borderRadius: 32,
+    transform: [{ scale: 1.03 }],
   },
   logoLabel: {
     fontSize: 10,
