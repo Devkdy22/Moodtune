@@ -230,10 +230,10 @@ export default function TrackDetailModal({
           {/* 웨이브폼 */}
           <View style={styles.waveformSection}>
             <Waveform
-              barCount={20}
-              height={56}
-              color={Colors.green}
+              barCount={18}
+              height={70}
               active={visible}
+              intensity={visible ? 0.62 : 0}
             />
           </View>
 

@@ -1,120 +1,51 @@
-// src/components/common/ScreenBackground.tsx
-// ─────────────────────────────────────────────────────────
-//  앱 전체 공통 배경 (로그인 배경과 동일한 애니메이션 오브)
-// ─────────────────────────────────────────────────────────
-import React, { useEffect, useRef } from "react";
-import { Animated, Dimensions, StyleSheet, View } from "react-native";
+import React, { useCallback, useRef, useState } from "react";
+import {
+  Animated,
+  Easing,
+  GestureResponderEvent,
+  LayoutChangeEvent,
+  StyleSheet,
+  View,
+} from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import { Colors } from "../../constants/colors";
 
-const { width: W, height: H } = Dimensions.get("window");
 const GREEN_RGB = "61,220,132";
+const MAX_RIPPLES = 5;
 
 type BackgroundIntensity = "subtle" | "normal" | "strong";
 
-const INTENSITY_PRESET: Record<
-  BackgroundIntensity,
-  {
-    amplitudeMul: number;
-    durationMul: number;
-    overlayOpacity: number;
-    orbAlphaMul: number;
-  }
-> = {
-  subtle: {
-    amplitudeMul: 0.72,
-    durationMul: 1.2,
-    overlayOpacity: 0.5,
-    orbAlphaMul: 0.7,
-  },
-  normal: {
-    amplitudeMul: 1,
-    durationMul: 1,
-    overlayOpacity: 0.75,
-    orbAlphaMul: 1,
-  },
-  strong: {
-    amplitudeMul: 1.28,
-    durationMul: 0.78,
-    overlayOpacity: 0.94,
-    orbAlphaMul: 1.35,
-  },
+const INTENSITY_PRESET: Record<BackgroundIntensity, { textureOpacity: number }> = {
+  subtle: { textureOpacity: 0.4 },
+  normal: { textureOpacity: 0.55 },
+  strong: { textureOpacity: 0.68 },
 };
 
 function alpha(a: number) {
   return `rgba(${GREEN_RGB},${Math.max(0, Math.min(1, a))})`;
 }
 
+function randomBetween(min: number, max: number) {
+  return min + Math.random() * (max - min);
+}
+
+type Ripple = {
+  id: number;
+  x: number;
+  y: number;
+  scale: Animated.Value;
+  opacity: Animated.Value;
+  size: number;
+  duration: number;
+  maxScale: number;
+  baseOpacity: number;
+  ringCount: 2 | 3;
+  coreSize: number;
+};
+
 interface Props {
   children: React.ReactNode;
   intensity?: BackgroundIntensity;
-}
-
-function FloatingOrb({
-  size,
-  color,
-  style,
-  duration = 9000,
-  amplitude = 18,
-}: {
-  size: number;
-  color: string;
-  style?: any;
-  duration?: number;
-  amplitude?: number;
-}) {
-  const t = useRef(new Animated.Value(0)).current;
-
-  useEffect(() => {
-    const loop = Animated.loop(
-      Animated.sequence([
-        Animated.timing(t, { toValue: 1, duration, useNativeDriver: true }),
-        Animated.timing(t, { toValue: 0, duration, useNativeDriver: true }),
-      ]),
-    );
-    loop.start();
-    return () => loop.stop();
-  }, [duration, t]);
-
-  const translateX = t.interpolate({
-    inputRange: [0, 1],
-    outputRange: [-amplitude, amplitude],
-  });
-  const translateY = t.interpolate({
-    inputRange: [0, 1],
-    outputRange: [amplitude, -amplitude],
-  });
-  const scale = t.interpolate({
-    inputRange: [0, 1],
-    outputRange: [0.98, 1.04],
-  });
-  const opacity = t.interpolate({
-    inputRange: [0, 1],
-    outputRange: [0.55, 0.86],
-  });
-
-  return (
-    <Animated.View
-      pointerEvents="none"
-      style={[
-        styles.orb,
-        {
-          width: size,
-          height: size,
-          borderRadius: size / 2,
-          backgroundColor: color,
-          opacity,
-          transform: [{ translateX }, { translateY }, { scale }],
-          shadowColor: color,
-          shadowOffset: { width: 0, height: 0 },
-          shadowOpacity: 0.5,
-          shadowRadius: 70,
-          elevation: 2,
-        },
-        style,
-      ]}
-    />
-  );
 }
 
 export default function ScreenBackground({
@@ -122,52 +53,219 @@ export default function ScreenBackground({
   intensity = "normal",
 }: Props) {
   const preset = INTENSITY_PRESET[intensity];
-  const move = (v: number) => Math.round(v * preset.amplitudeMul);
-  const dur = (v: number) => Math.round(v * preset.durationMul);
-  const tone = (v: number) => v * preset.orbAlphaMul;
+  const rootRef = useRef<View>(null);
+  const rootOffsetRef = useRef({ x: 0, y: 0 });
+  const nextIdRef = useRef(1);
+  const [rootSize, setRootSize] = useState({ width: 0, height: 0 });
+  const [ripples, setRipples] = useState<Ripple[]>([]);
+
+  const removeRipple = useCallback((id: number) => {
+    setRipples(prev => prev.filter(r => r.id !== id));
+  }, []);
+
+  const syncRootOffset = useCallback(() => {
+    rootRef.current?.measureInWindow?.((x, y) => {
+      rootOffsetRef.current = { x, y };
+    });
+  }, []);
+
+  const handleLayout = useCallback(
+    (event: LayoutChangeEvent) => {
+      const { width, height } = event.nativeEvent.layout;
+      setRootSize({ width, height });
+      syncRootOffset();
+    },
+    [syncRootOffset],
+  );
+
+  const handleTouchStart = useCallback(
+    (event: GestureResponderEvent) => {
+      const { pageX, pageY } = event.nativeEvent;
+      const x = pageX - rootOffsetRef.current.x;
+      const y = pageY - rootOffsetRef.current.y;
+      const clampedX = Math.max(0, Math.min(rootSize.width, x));
+      const clampedY = Math.max(0, Math.min(rootSize.height, y));
+      const id = nextIdRef.current++;
+      const duration = Math.round(randomBetween(700, 1000));
+      const maxScale = randomBetween(1.45, 1.9);
+      const ringCount: 2 | 3 = Math.random() < 0.55 ? 3 : 2;
+      const ripple: Ripple = {
+        id,
+        x: clampedX,
+        y: clampedY,
+        scale: new Animated.Value(0.2),
+        opacity: new Animated.Value(randomBetween(0.4, 0.8)),
+        size: randomBetween(56, 82),
+        duration,
+        maxScale,
+        baseOpacity: randomBetween(0.4, 0.8),
+        ringCount,
+        coreSize: randomBetween(40, 60),
+      };
+
+      setRipples(prev => {
+        const next = [...prev, ripple];
+        return next.length > MAX_RIPPLES
+          ? next.slice(next.length - MAX_RIPPLES)
+          : next;
+      });
+
+      Animated.parallel([
+        Animated.timing(ripple.scale, {
+          toValue: maxScale,
+          duration,
+          easing: Easing.out(Easing.ease),
+          useNativeDriver: true,
+        }),
+        Animated.timing(ripple.opacity, {
+          toValue: 0,
+          duration,
+          easing: Easing.out(Easing.ease),
+          useNativeDriver: true,
+        }),
+      ]).start(() => removeRipple(id));
+    },
+    [removeRipple, rootSize.height, rootSize.width],
+  );
 
   return (
-    <View style={styles.root}>
+    <View
+      ref={rootRef}
+      style={styles.root}
+      onLayout={handleLayout}
+      onTouchStart={handleTouchStart}
+    >
       <LinearGradient
-        colors={["#030e07", "#0a1f16", "#07140f"]}
-        start={{ x: 0.2, y: 0 }}
-        end={{ x: 0.8, y: 1 }}
+        colors={["#020904", "#071b12", "#04110b"]}
+        start={{ x: 0.16, y: 0.02 }}
+        end={{ x: 0.84, y: 1 }}
         style={StyleSheet.absoluteFill}
       />
 
       <LinearGradient
         pointerEvents="none"
-        colors={[
-          alpha(tone(0.16)),
-          alpha(tone(0.06)),
-          "rgba(0,0,0,0)",
-        ]}
-        start={{ x: 0.05, y: 0.05 }}
-        end={{ x: 0.85, y: 0.95 }}
-        style={[StyleSheet.absoluteFill, { opacity: preset.overlayOpacity }]}
+        colors={[alpha(0.14), alpha(0.06), "rgba(0,0,0,0)"]}
+        start={{ x: 0.03, y: 0.08 }}
+        end={{ x: 0.9, y: 0.95 }}
+        style={[StyleSheet.absoluteFill, { opacity: preset.textureOpacity }]}
       />
 
-      <FloatingOrb
-        size={W * 0.92}
-        color={alpha(tone(0.09))}
-        amplitude={move(22)}
-        duration={dur(10500)}
-        style={{ top: -W * 0.42, left: -W * 0.28 }}
-      />
-      <FloatingOrb
-        size={W * 1.02}
-        color={alpha(tone(0.08))}
-        amplitude={move(24)}
-        duration={dur(12500)}
-        style={{ bottom: -W * 0.5, right: -W * 0.35 }}
-      />
-      <FloatingOrb
-        size={W * 0.62}
-        color={alpha(tone(0.06))}
-        amplitude={move(16)}
-        duration={dur(9200)}
-        style={{ top: H * 0.34, left: W * 0.2 }}
-      />
+      <View pointerEvents="none" style={StyleSheet.absoluteFill}>
+        {ripples.map(ripple => {
+          const ring1Opacity = Animated.multiply(
+            ripple.opacity,
+            ripple.baseOpacity,
+          );
+          const ring2Opacity = Animated.multiply(
+            ripple.opacity,
+            ripple.baseOpacity * 0.75,
+          );
+          const ring3Opacity = Animated.multiply(
+            ripple.opacity,
+            ripple.baseOpacity * 0.55,
+          );
+          const ring2Scale = ripple.scale.interpolate({
+            inputRange: [0.2, 0.9, ripple.maxScale],
+            outputRange: [0.46, 0.88, 1.06],
+            extrapolate: "clamp",
+          });
+          const ring3Scale = ripple.scale.interpolate({
+            inputRange: [0.2, 1.2, ripple.maxScale],
+            outputRange: [0.34, 0.78, 0.98],
+            extrapolate: "clamp",
+          });
+
+          return (
+            <View
+              key={ripple.id}
+              style={[
+                styles.rippleAnchor,
+                {
+                  left: ripple.x - ripple.size / 2,
+                  top: ripple.y - ripple.size / 2,
+                  width: ripple.size,
+                  height: ripple.size,
+                },
+              ]}
+            >
+              <Animated.View
+                style={[
+                  styles.outerBloom,
+                  {
+                    width: ripple.coreSize * 2.8,
+                    height: ripple.coreSize * 2.8,
+                    borderRadius: (ripple.coreSize * 2.8) / 2,
+                    left: (ripple.size - ripple.coreSize * 2.8) / 2,
+                    top: (ripple.size - ripple.coreSize * 2.8) / 2,
+                    opacity: Animated.multiply(ripple.opacity, 0.34),
+                    transform: [{ scale: ripple.scale }],
+                  },
+                ]}
+              />
+
+              <Animated.View
+                style={[
+                  styles.coreHalo,
+                  {
+                    width: ripple.coreSize * 1.9,
+                    height: ripple.coreSize * 1.9,
+                    borderRadius: (ripple.coreSize * 1.9) / 2,
+                    left: (ripple.size - ripple.coreSize * 1.9) / 2,
+                    top: (ripple.size - ripple.coreSize * 1.9) / 2,
+                    opacity: Animated.multiply(ripple.opacity, 0.55),
+                    transform: [{ scale: ripple.scale }],
+                  },
+                ]}
+              />
+
+              <Animated.View
+                style={[
+                  styles.coreGlow,
+                  {
+                    width: ripple.coreSize,
+                    height: ripple.coreSize,
+                    borderRadius: ripple.coreSize / 2,
+                    left: (ripple.size - ripple.coreSize) / 2,
+                    top: (ripple.size - ripple.coreSize) / 2,
+                    opacity: Animated.multiply(ripple.opacity, 0.9),
+                    transform: [{ scale: ripple.scale }],
+                  },
+                ]}
+              />
+
+              <Animated.View
+                style={[
+                  styles.ring,
+                  {
+                    opacity: ring1Opacity,
+                    transform: [{ scale: ripple.scale }],
+                  },
+                ]}
+              />
+              <Animated.View
+                style={[
+                  styles.ring,
+                  {
+                    opacity: ring2Opacity,
+                    transform: [{ scale: ring2Scale }],
+                  },
+                ]}
+              />
+              {ripple.ringCount === 3 ? (
+                <Animated.View
+                  style={[
+                    styles.ring,
+                    {
+                      opacity: ring3Opacity,
+                      transform: [{ scale: ring3Scale }],
+                    },
+                  ]}
+                />
+              ) : null}
+            </View>
+          );
+        })}
+      </View>
 
       {children}
     </View>
@@ -180,7 +278,43 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.bgDeep,
     overflow: "hidden",
   },
-  orb: {
+  rippleAnchor: {
     position: "absolute",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  coreGlow: {
+    position: "absolute",
+    backgroundColor: "#3DDC84",
+    shadowColor: "#3DDC84",
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.76,
+    shadowRadius: 30,
+    elevation: 5,
+  },
+  coreHalo: {
+    position: "absolute",
+    backgroundColor: "rgba(61,220,132,0.32)",
+    shadowColor: "#3DDC84",
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.7,
+    shadowRadius: 46,
+    elevation: 6,
+  },
+  outerBloom: {
+    position: "absolute",
+    backgroundColor: "rgba(61,220,132,0.22)",
+    shadowColor: "#3DDC84",
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.72,
+    shadowRadius: 58,
+    elevation: 7,
+  },
+  ring: {
+    ...StyleSheet.absoluteFillObject,
+    borderWidth: 2,
+    borderColor: "rgba(61,220,132,0.68)",
+    backgroundColor: "rgba(61,220,132,0.04)",
+    borderRadius: 999,
   },
 });
