@@ -824,6 +824,12 @@ function mergeRecommendationOutputs(args: {
   });
 
   return {
+    status:
+      args.full?.status === "success" || args.fast?.status === "success"
+        ? "success"
+        : args.full?.status === "partial" || args.fast?.status === "partial"
+          ? "partial"
+          : "failed",
     tracks,
     playlistName:
       args.fast?.playlistName ||
@@ -834,6 +840,7 @@ function mergeRecommendationOutputs(args: {
       args.full?.reasoning ||
       "빠른 분석 결과를 유지하고 부족한 곡은 보강했어요.",
     fallbackReason: args.fast?.fallbackReason ?? args.full?.fallbackReason,
+    meta: args.fast?.meta ?? args.full?.meta,
   };
 }
 
@@ -891,6 +898,11 @@ export default function HomeScreen() {
   const loadingPhaseEpochRef = useRef(0);
   const loadingRunEpochRef = useRef<number | null>(null);
   const isStartingRecommendationRef = useRef(false);
+  const isRunningRecommendationRef = useRef(false);
+  const pendingRecommendationStartRef = useRef(false);
+  const recommendationTriggerSourceRef = useRef<"button" | "retry" | "auto">(
+    "button",
+  );
   const fadeAnim = useRef(new Animated.Value(1)).current;
   const userFirstName =
     spotifyUser?.display_name?.trim().split(/\s+/)[0] ||
@@ -911,6 +923,7 @@ export default function HomeScreen() {
     }
     isStartingRecommendationRef.current = false;
     loadingRunEpochRef.current = null;
+    pendingRecommendationStartRef.current = false;
   }, [phase]);
 
   // s2 Syncing → s3 Home 자동 전환
@@ -946,6 +959,13 @@ export default function HomeScreen() {
   // 로딩 단계 시뮬레이션
   useEffect(() => {
     if (phase !== "loading") return;
+    if (!pendingRecommendationStartRef.current) {
+      console.warn(
+        "[Home] recommendation trigger source=effect skipped reason=no_pending_start",
+      );
+      return;
+    }
+    pendingRecommendationStartRef.current = false;
     const loadingEpoch = loadingPhaseEpochRef.current;
     if (loadingRunEpochRef.current === loadingEpoch) {
       console.warn(
@@ -954,10 +974,12 @@ export default function HomeScreen() {
       return;
     }
     loadingRunEpochRef.current = loadingEpoch;
+    const triggerSource = recommendationTriggerSourceRef.current;
     console.warn(
-      `[Home] recommendation trigger source=effect phase=loading epoch=${loadingEpoch}`,
+      `[Home] recommendation trigger source=${triggerSource} phase=loading epoch=${loadingEpoch}`,
     );
     setLoadingStep(0);
+    console.warn("[Home] setLoading(true)");
     setRequestState("loading");
     setAnalysisProgress({
       progress: 0.1,
@@ -973,6 +995,11 @@ export default function HomeScreen() {
     const timers: ReturnType<typeof setTimeout>[] = [];
 
     const run = async () => {
+      if (isRunningRecommendationRef.current) {
+        console.warn("[Home] recommendation trigger source=effect skipped reason=already_running");
+        return;
+      }
+      isRunningRecommendationRef.current = true;
       const requestId = createRecommendationRequestId();
       if (activeAbortControllerRef.current) {
         console.warn(
@@ -1064,8 +1091,6 @@ export default function HomeScreen() {
         }
         let result: RecommendationOutput | null = null;
         let fastResult: RecommendationOutput | null = null;
-        let backgroundUpgrade: Promise<RecommendationOutput | null> | null =
-          null;
         let fastFailedByTimeout = false;
         const buildImmediateTimeoutResult = () => {
           const partial = consumeFastWorkingRecommendation({
@@ -1150,6 +1175,7 @@ export default function HomeScreen() {
           }));
         };
         const fastMaxDurationMs = Math.max(15_000, fastBudgetMs);
+        console.warn("[Home] analyze start", { requestId });
 
         try {
           result = await analyzeMoodAndRecommendFast(
@@ -1170,6 +1196,10 @@ export default function HomeScreen() {
           );
           if (dropIfStale("fast_result")) return;
           fastResult = result;
+          if (activeRequestIdRef.current !== requestId) {
+            console.warn("[Home] stale result ignored", requestId);
+            return;
+          }
           enqueueToast(
             "프롬프트 핵심 기반 빠른 분석으로 추천했어요.",
             "prompt_first_fast_primary",
@@ -1213,76 +1243,47 @@ export default function HomeScreen() {
         if (!result && !ENABLE_FULL_ANALYSIS_AFTER_FAST) {
           throw new Error("fast analysis timeout");
         }
-        let fullResult: RecommendationOutput | null = null;
         const shouldRunFullMerge =
           ENABLE_FULL_ANALYSIS_AFTER_FAST &&
-          (!result || (result?.tracks?.length ?? 0) < 18);
-
+          (!result || result.status === "failed");
         if (shouldRunFullMerge) {
-          if (fastFailedByTimeout && (fastResult ?? result)) {
-            backgroundUpgrade = Promise.race([
-              analyzeMoodAndRecommend({
-                moodInput: finalPrompt,
-                spotifyUser,
-                spotifyBootstrap,
-                spotifyAccessToken: accessToken,
-                requestId,
-                abortSignal: abortController.signal,
-              }),
-              new Promise<never>((_, reject) =>
-                setTimeout(
-                  () => reject(new Error("playlist generation timeout")),
-                  PLAYLIST_GENERATION_TIMEOUT_MS,
-                ),
-              ),
-            ])
-              .then(full =>
-                mergeRecommendationOutputs({
-                  fast: fastResult ?? result,
-                  full,
-                  prompt: finalPrompt,
-                  targetMinutes: estimateTargetMinutes(selections.length),
-                  previousTrackIds,
-                  seedTracks: buildBootstrapSeedTracks(spotifyBootstrap, 180),
-                }),
-              )
-              .catch(() => null);
-          } else {
-            fullResult = await Promise.race([
-              analyzeMoodAndRecommend({
-                moodInput: finalPrompt,
-                spotifyUser,
-                spotifyBootstrap,
-                spotifyAccessToken: accessToken,
-                requestId,
-                abortSignal: abortController.signal,
-              }),
-              new Promise<never>((_, reject) =>
-                setTimeout(
-                  () => reject(new Error("playlist generation timeout")),
-                  PLAYLIST_GENERATION_TIMEOUT_MS,
-                ),
-              ),
-            ]);
-            if (dropIfStale("full_result")) return;
-            result = mergeRecommendationOutputs({
-              fast: fastResult ?? result,
-              full: fullResult,
-              prompt: finalPrompt,
-              targetMinutes: estimateTargetMinutes(selections.length),
-              previousTrackIds,
-              seedTracks: buildBootstrapSeedTracks(spotifyBootstrap, 180),
-            });
+          const fullResult = await analyzeMoodAndRecommend({
+            moodInput: finalPrompt,
+            spotifyUser,
+            spotifyBootstrap,
+            spotifyAccessToken: accessToken,
+            requestId,
+            abortSignal: abortController.signal,
+          });
+          if (dropIfStale("full_result")) return;
+          if (activeRequestIdRef.current !== requestId) {
+            console.warn("[Home] stale result ignored", requestId);
+            return;
           }
-        } else if (!result) {
-          result = fullResult;
+          result = mergeRecommendationOutputs({
+            fast: fastResult ?? result,
+            full: fullResult,
+            prompt: finalPrompt,
+            targetMinutes: estimateTargetMinutes(selections.length),
+            previousTrackIds,
+            seedTracks: buildBootstrapSeedTracks(spotifyBootstrap, 180),
+          });
         }
         if (!result) throw new Error("playlist generation timeout");
         const {
           tracks: generatedTracks,
           playlistName,
           fallbackReason,
+          status: resultStatusRaw,
         } = result;
+        const resultStatus =
+          resultStatusRaw ??
+          (generatedTracks.length ? "success" : "failed");
+        console.warn("[Home] analyze resolved", {
+          requestId,
+          status: resultStatus,
+          trackCount: generatedTracks.length,
+        });
 
         if (dropIfStale("before_finalize")) return;
         if (fallbackReason === "gemini_quota_exceeded") {
@@ -1293,100 +1294,63 @@ export default function HomeScreen() {
           );
         }
 
-        const targetMinutes = estimateTargetMinutes(selections.length);
-        const seedTracks = buildBootstrapSeedTracks(spotifyBootstrap, 140);
-        const avoidTrackIds = new Set(previousTrackIds);
-        const timeoutFallbackTracks = buildPromptAwareFallbackTracks({
-          seedTracks,
-          prompt: finalPrompt,
-          targetMinutes,
-          avoidTrackIds,
-        });
-        const fallbackTracks = timeoutFallbackTracks.length
-          ? timeoutFallbackTracks
-          : MOCK_TRACKS;
-        const finalTracks = applyNoveltyPolicy({
-          tracks: generatedTracks.length ? generatedTracks : fallbackTracks,
-          prompt: finalPrompt,
-          targetMinutes,
-          seedTracks,
-          previousTrackIds,
-          minNewRatio: 0.6,
-          maxOldRatio: 0.2,
-        });
+        if (resultStatus === "failed") {
+          setTracks(() => []);
+          setCurrentPlaylist(null);
+          console.warn("[Home] setPlaylist count", 0);
+          console.warn("[Home] setGenerationState", {
+            requestId,
+            state: "failed",
+          });
+          setRequestState("failed");
+          enqueueToast(
+            "플레이리스트 생성에 실패했습니다.",
+            "playlist_generation_failed",
+            "warning",
+          );
+          return;
+        }
+        const nextTracks = Array.isArray(generatedTracks) ? generatedTracks : [];
         lastGeneratedTrackIdsRef.current = new Set(
-          finalTracks.map(t => String(t.id ?? "").trim()).filter(Boolean),
+          nextTracks.map(t => String(t.id ?? "").trim()).filter(Boolean),
         );
-        const totalMins = finalTracks.reduce((sum: number, t: Track) => {
+        const totalMins = nextTracks.reduce((sum: number, t: Track) => {
           const [m, s] = t.duration.split(":").map(Number);
           return sum + m + s / 60;
         }, 0);
-
         setCurrentPlaylist({
           id: "gen_1",
           name: playlistName || "AI 추천 플레이리스트",
           coverEmoji: "♬",
           gradientStart: "#1a2535",
           gradientEnd: "#0e1822",
-          trackCount: finalTracks.length,
+          trackCount: nextTracks.length,
           duration: `${Math.max(1, Math.round(totalMins))}분`,
           liked: false,
-          tracks: finalTracks,
+          tracks: nextTracks,
           createdAt: new Date(),
           moodInput: finalPrompt,
         });
-        setTracks(finalTracks);
-        setRequestState(backgroundUpgrade ? "partial" : "complete");
-        timers.push(setTimeout(() => !cancelled && goTo("preview"), 2450));
-        if (backgroundUpgrade) {
-          void backgroundUpgrade.then(upgraded => {
-            if (dropIfStale("background_upgrade") || !upgraded?.tracks?.length)
-              return;
-            const upgradedTracks = upgraded.tracks;
-            const upgradedIds = upgradedTracks
-              .map(t => String(t.id ?? "").trim())
-              .filter(Boolean)
-              .join("|");
-            const currentIds = finalTracks
-              .map(t => String(t.id ?? "").trim())
-              .filter(Boolean)
-              .join("|");
-            if (upgradedIds && upgradedIds === currentIds) return;
-            const upgradedTotalMins = upgradedTracks.reduce(
-              (sum: number, t: Track) => {
-                const [m, s] = t.duration.split(":").map(Number);
-                return sum + m + s / 60;
-              },
-              0,
-            );
-            lastGeneratedTrackIdsRef.current = new Set(
-              upgradedTracks
-                .map(t => String(t.id ?? "").trim())
-                .filter(Boolean),
-            );
-            setCurrentPlaylist({
-              id: "gen_1",
-              name:
-                upgraded.playlistName || playlistName || "AI 추천 플레이리스트",
-              coverEmoji: "♬",
-              gradientStart: "#1a2535",
-              gradientEnd: "#0e1822",
-              trackCount: upgradedTracks.length,
-              duration: `${Math.max(1, Math.round(upgradedTotalMins))}분`,
-              liked: false,
-              tracks: upgradedTracks,
-              createdAt: new Date(),
-              moodInput: finalPrompt,
-            });
-            setTracks(upgradedTracks);
-            setRequestState("complete");
-            enqueueToast(
-              "AI 전략 분석이 완료되어 추천 결과를 업데이트했어요.",
-              "background_ai_upgrade",
-              "info",
-            );
+        setTracks(() => nextTracks);
+        console.warn("[Home] setPlaylist count", nextTracks.length);
+        console.warn("[Home] setPlaylist replace", {
+          requestId,
+          nextCount: nextTracks.length,
+        });
+        if (resultStatus === "partial") {
+          console.warn("[Home] setGenerationState", {
+            requestId,
+            state: "partial-completed",
           });
+          setRequestState("partial");
+        } else {
+          console.warn("[Home] setGenerationState", {
+            requestId,
+            state: "completed",
+          });
+          setRequestState("complete");
         }
+        timers.push(setTimeout(() => !cancelled && goTo("preview"), 2450));
       } catch (error) {
         console.warn(
           `[home] playlist generation failed: ${String((error as Error)?.message ?? error)}`,
@@ -1457,12 +1421,17 @@ export default function HomeScreen() {
         });
         setTracks(finalFallbackTracks);
         timers.push(setTimeout(() => !cancelled && goTo("preview"), 2300));
+      } finally {
+        console.warn("[Home] setLoading(false)", { requestId });
+        isRunningRecommendationRef.current = false;
+        console.warn("[Home] recommendation finalized", { requestId });
       }
     };
 
     run();
     return () => {
       cancelled = true;
+      isRunningRecommendationRef.current = false;
       if (activeAbortControllerRef.current) {
         activeAbortControllerRef.current.abort();
         activeAbortControllerRef.current = null;
@@ -1489,6 +1458,14 @@ export default function HomeScreen() {
 
   function startGeneration(sourceInput?: unknown) {
     if (!moodText.trim()) return;
+    if (requestState === "loading") {
+      console.warn("[Home] recommendation trigger skipped reason=loading");
+      return;
+    }
+    if (isRunningRecommendationRef.current) {
+      console.warn("[Home] recommendation trigger skipped reason=already_running");
+      return;
+    }
     const source: "button" | "retry" =
       sourceInput === "retry" ? "retry" : "button";
     if (isStartingRecommendationRef.current) {
@@ -1498,6 +1475,8 @@ export default function HomeScreen() {
       return;
     }
     isStartingRecommendationRef.current = true;
+    recommendationTriggerSourceRef.current = source;
+    pendingRecommendationStartRef.current = true;
     console.warn(`[Home] recommendation trigger source=${source}`);
     const finalPrompt = composePrompt(moodText, selections);
     setMoodInput(finalPrompt);
@@ -2316,7 +2295,7 @@ function LoadingView({ insets, requestState, analysisProgress }: any) {
   const previewTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const previewLoopStopRef = useRef(false);
 
-  const isAnalyzing = requestState === "loading" || requestState === "partial";
+  const isAnalyzing = requestState === "loading";
   const isComplete = requestState === "complete";
   const isFailed = requestState === "failed";
   const isSettled = isComplete || isFailed;
