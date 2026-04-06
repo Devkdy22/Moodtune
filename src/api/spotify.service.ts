@@ -283,15 +283,12 @@ export async function refreshSpotifyAccessToken(args: {
     const granted = new Set(scopeRaw.split(/\s+/).filter(Boolean));
     const required = ["user-top-read", "user-library-read", "user-read-recently-played"];
     const missing = required.filter(s => !granted.has(s));
-    const tokenPrefix = accessToken.slice(0, 10);
     if (missing.length) {
       console.warn(
-        `[Spotify] refresh scope check tokenPrefix=${tokenPrefix} missing=${missing.join(",")}`,
+        `[Spotify] refresh scope check missing=${missing.join(",")}`,
       );
     } else {
-      console.warn(
-        `[Spotify] refresh scope check tokenPrefix=${tokenPrefix} ok`,
-      );
+      console.warn("[Spotify] refresh scope check ok");
     }
   } else {
     console.warn("[Spotify] refresh scope not returned by Spotify; reusing prior consent scopes");
@@ -393,11 +390,9 @@ async function ensureSpotifyUserAccessToken(
   const cached = spotifyUserTokenProbeCache.get(tokenPrefix);
   if (cached && Date.now() - cached.checkedAt < 10 * 60_000) {
     if (cached.isUserToken) return;
-    throw new Error(
-      `[Spotify] User token is required (${context}): tokenPrefix=${tokenPrefix}`,
-    );
+    throw new Error(`[Spotify] User token is required (${context})`);
   }
-  console.warn(`[Spotify] /me probe start context=${context} tokenPrefix=${tokenPrefix}`);
+  console.warn(`[Spotify] /me probe start context=${context}`);
   const res = await spotifyFetch(
     "/me",
     { headers: { Authorization: `Bearer ${token}` } },
@@ -405,10 +400,7 @@ async function ensureSpotifyUserAccessToken(
   );
   const json: any = await res.json().catch(() => null);
   if (res.ok) {
-    const userId = String(json?.id ?? "").trim();
-    console.warn(
-      `[Spotify] /me probe ok context=${context} tokenPrefix=${tokenPrefix} user=${userId || "unknown"}`,
-    );
+    console.warn(`[Spotify] /me probe ok context=${context}`);
     spotifyUserTokenProbeCache.set(tokenPrefix, {
       isUserToken: true,
       checkedAt: Date.now(),
@@ -416,7 +408,7 @@ async function ensureSpotifyUserAccessToken(
     return;
   }
   console.warn(
-    `[Spotify] /me probe failed context=${context} tokenPrefix=${tokenPrefix} status=${res.status}`,
+    `[Spotify] /me probe failed context=${context} status=${res.status}`,
   );
   spotifyUserTokenProbeCache.set(tokenPrefix, {
     isUserToken: false,
@@ -425,7 +417,7 @@ async function ensureSpotifyUserAccessToken(
   throw new Error(
     `[Spotify] User token is required (${context}). /me failed (${res.status}): ${summarizeSpotifyPayload(
       json,
-    )} tokenPrefix=${tokenPrefix}`,
+    )}`,
   );
 }
 
