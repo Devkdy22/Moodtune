@@ -14,6 +14,61 @@ import {
 } from "../types";
 
 const CLIENT_ID = process.env.EXPO_PUBLIC_SPOTIFY_CLIENT_ID ?? "";
+const CLIENT_SECRET =
+  process.env.EXPO_PUBLIC_SPOTIFY_CLIENT_SECRET ??
+  process.env.SPOTIFY_CLIENT_SECRET ??
+  "";
+const SPOTIFY_ENABLE_METADATA_ENRICH = String(
+  process.env.EXPO_PUBLIC_SPOTIFY_ENABLE_METADATA_ENRICH ?? "false",
+)
+  .trim()
+  .toLowerCase() === "true";
+type SpotifyApiHealthSnapshot = {
+  metadataEnrichEnabled: boolean;
+  audioFeatures403Count: number;
+  artist403Count: number;
+  savedTrack403Count: number;
+  lastFailureAt: number | null;
+};
+export type SpotifySearchBackoffSnapshot = {
+  limited: boolean;
+  cooldownMs: number;
+  strike: number;
+};
+const spotifyApiHealth = {
+  audioFeatures403Count: 0,
+  artist403Count: 0,
+  savedTrack403Count: 0,
+  lastFailureAt: 0,
+};
+
+export function getSpotifyApiHealthSnapshot(): SpotifyApiHealthSnapshot {
+  return {
+    metadataEnrichEnabled: SPOTIFY_ENABLE_METADATA_ENRICH,
+    audioFeatures403Count: spotifyApiHealth.audioFeatures403Count,
+    artist403Count: spotifyApiHealth.artist403Count,
+    savedTrack403Count: spotifyApiHealth.savedTrack403Count,
+    lastFailureAt: spotifyApiHealth.lastFailureAt || null,
+  };
+}
+
+export function getSpotifySearchBackoffSnapshot(): SpotifySearchBackoffSnapshot {
+  const now = Date.now();
+  const cooldownMs = Math.max(0, Math.max(spotifyGlobalCooldownUntil, spotifySearchRateLimitedUntil) - now);
+  const recentLimited = now - spotifySearchRateLimitLastAt <= 90_000;
+  return {
+    limited: cooldownMs > 0 || (spotifySearchRateLimitStrike >= 2 && recentLimited),
+    cooldownMs,
+    strike: spotifySearchRateLimitStrike,
+  };
+}
+
+function recordSpotify403Failure(kind: "audio" | "artist" | "saved"): void {
+  if (kind === "audio") spotifyApiHealth.audioFeatures403Count += 1;
+  if (kind === "artist") spotifyApiHealth.artist403Count += 1;
+  if (kind === "saved") spotifyApiHealth.savedTrack403Count += 1;
+  spotifyApiHealth.lastFailureAt = Date.now();
+}
 export const REDIRECT_URI = AuthSession.makeRedirectUri({
   scheme: "moodtune",
   path: "auth/spotify-login",
@@ -68,6 +123,46 @@ function errorMessage(err: unknown): string {
   return "unknown_error";
 }
 
+const SPOTIFY_AUTH_COOLDOWN_MS = 90_000;
+let spotifyAuthFailureCache: { tokenKey: string; until: number } | null = null;
+let spotifyAuthFailureWarnAt = 0;
+
+function spotifyTokenKey(accessToken: string): string {
+  return String(accessToken ?? "").trim().slice(0, 18);
+}
+
+function isSpotifyAuthErrorMessage(input: unknown): boolean {
+  const msg = String(
+    input instanceof Error ? input.message : input ?? "",
+  ).toLowerCase();
+  return (
+    msg.includes("(401)") ||
+    msg.includes("invalid_token") ||
+    msg.includes("access token expired") ||
+    msg.includes("authentication unavailable") ||
+    msg.includes("인증 만료")
+  );
+}
+
+function shouldSkipSpotifyByAuthFailure(accessToken: string): boolean {
+  if (!spotifyAuthFailureCache) return false;
+  if (Date.now() >= spotifyAuthFailureCache.until) return false;
+  const key = spotifyTokenKey(accessToken);
+  if (!key) return false;
+  return spotifyAuthFailureCache.tokenKey === key;
+}
+
+function markSpotifyAuthFailure(accessToken: string, reason?: string): void {
+  spotifyAuthFailureCache = {
+    tokenKey: spotifyTokenKey(accessToken),
+    until: Date.now() + SPOTIFY_AUTH_COOLDOWN_MS,
+  };
+  if (Date.now() - spotifyAuthFailureWarnAt < 5000) return;
+  spotifyAuthFailureWarnAt = Date.now();
+  const suffix = reason ? ` (${reason})` : "";
+  console.warn(`[Spotify] authentication expired. suppressing requests for 90s${suffix}`);
+}
+
 function isMoodtunePlaylistLike(args: {
   name?: string;
   description?: string;
@@ -107,6 +202,7 @@ export async function exchangeSpotifyCodeForTokens(args: {
   body.set("code", args.code);
   body.set("redirect_uri", redirectUri);
   body.set("code_verifier", args.codeVerifier);
+  if (CLIENT_SECRET) body.set("client_secret", CLIENT_SECRET);
 
   const res = await fetch(SPOTIFY_DISCOVERY.tokenEndpoint, {
     method: "POST",
@@ -128,6 +224,8 @@ export async function exchangeSpotifyCodeForTokens(args: {
     );
   }
 
+  spotifyAuthFailureCache = null;
+  spotifyUserTokenProbeCache = new Map();
   return {
     accessToken,
     refreshToken,
@@ -147,26 +245,60 @@ export async function refreshSpotifyAccessToken(args: {
   body.set("client_id", CLIENT_ID);
   body.set("grant_type", "refresh_token");
   body.set("refresh_token", args.refreshToken);
+  if (CLIENT_SECRET) body.set("client_secret", CLIENT_SECRET);
 
   const res = await fetch(SPOTIFY_DISCOVERY.tokenEndpoint, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: body.toString(),
   });
-  const json: any = await res.json().catch(() => null);
+  const raw = await res.text();
+  let json: any = null;
+  if (raw) {
+    try {
+      json = JSON.parse(raw);
+    } catch {
+      json = null;
+    }
+  }
   if (!res.ok) {
+    const detail = summarizeSpotifyPayload(json);
+    const rawHint = raw
+      ? redactSensitiveText(raw).slice(0, 220)
+      : "empty_response_body";
+    console.error(`[Spotify] refresh error body (${res.status}): ${rawHint}`);
     throw new Error(
-      `Spotify refresh failed (${res.status}): ${summarizeSpotifyPayload(json)}`,
+      `Spotify refresh failed (${res.status}): ${detail}; raw=${rawHint}`,
     );
   }
   const accessToken = String(json?.access_token ?? "");
   const expiresIn = Number(json?.expires_in ?? 0);
+  const scopeRaw = String(json?.scope ?? "").trim();
   if (!accessToken || !expiresIn) {
     throw new Error(
       `Spotify refresh response missing fields: ${summarizeSpotifyPayload(json)}`,
     );
   }
+  if (scopeRaw) {
+    const granted = new Set(scopeRaw.split(/\s+/).filter(Boolean));
+    const required = ["user-top-read", "user-library-read", "user-read-recently-played"];
+    const missing = required.filter(s => !granted.has(s));
+    const tokenPrefix = accessToken.slice(0, 10);
+    if (missing.length) {
+      console.warn(
+        `[Spotify] refresh scope check tokenPrefix=${tokenPrefix} missing=${missing.join(",")}`,
+      );
+    } else {
+      console.warn(
+        `[Spotify] refresh scope check tokenPrefix=${tokenPrefix} ok`,
+      );
+    }
+  } else {
+    console.warn("[Spotify] refresh scope not returned by Spotify; reusing prior consent scopes");
+  }
   // Spotify may omit refresh_token on refresh responses; keep the existing one.
+  spotifyAuthFailureCache = null;
+  spotifyUserTokenProbeCache = new Map();
   return {
     accessToken,
     refreshToken: args.refreshToken,
@@ -202,6 +334,20 @@ type SavedPlaylistResult = {
   externalUrl?: string;
 };
 
+export type SpotifyRecommendationArgs = {
+  accessToken: string;
+  seedArtists?: string[];
+  seedTracks?: string[];
+  seedGenres?: string[];
+  targetEnergy?: number;
+  targetValence?: number;
+  targetAcousticness?: number;
+  targetTempo?: number;
+  minTempo?: number;
+  maxTempo?: number;
+  limit?: number;
+};
+
 let canUseAudioFeaturesApi = true;
 let canUseArtistApi = true;
 let canUseSavedTrackContainsApi = true;
@@ -217,10 +363,131 @@ let playlistTracksInFlight = new Map<string, Promise<SpotifyTrackSummary[]>>();
 let playlistTracksCooldownUntil = new Map<string, number>();
 let spotifyGlobalCooldownUntil = 0;
 let playlistCreateCooldownUntil = 0;
+const MAX_SPOTIFY_GLOBAL_COOLDOWN_MS = 120_000;
+const MAX_SPOTIFY_RETRY_AFTER_MS = 30_000;
+let spotifySearchRateLimitStrike = 0;
+let spotifySearchRateLimitedUntil = 0;
+const MAX_SPOTIFY_SEARCH_RATE_LIMIT_MS = 120_000;
+let spotifySearchRateLimitLastAt = 0;
 const lastMoodtunePlaylistIdByUser = new Map<string, string>();
+let spotifyUserTokenProbeCache = new Map<
+  string,
+  { isUserToken: boolean; checkedAt: number }
+>();
+
+export function invalidateMoodtunePlaylistCache(): void {
+  moodtunePlaylistsCache = null;
+  moodtunePlaylistsInFlight = null;
+  moodtunePlaylistsCooldownUntil = 0;
+}
+
+async function ensureSpotifyUserAccessToken(
+  accessToken: string,
+  context: string,
+): Promise<void> {
+  const token = String(accessToken ?? "").trim();
+  if (!token) {
+    throw new Error(`[Spotify] User token is required (${context}): empty token`);
+  }
+  const tokenPrefix = token.slice(0, 10);
+  const cached = spotifyUserTokenProbeCache.get(tokenPrefix);
+  if (cached && Date.now() - cached.checkedAt < 10 * 60_000) {
+    if (cached.isUserToken) return;
+    throw new Error(
+      `[Spotify] User token is required (${context}): tokenPrefix=${tokenPrefix}`,
+    );
+  }
+  console.warn(`[Spotify] /me probe start context=${context} tokenPrefix=${tokenPrefix}`);
+  const res = await spotifyFetch(
+    "/me",
+    { headers: { Authorization: `Bearer ${token}` } },
+    5_000,
+  );
+  const json: any = await res.json().catch(() => null);
+  if (res.ok) {
+    const userId = String(json?.id ?? "").trim();
+    console.warn(
+      `[Spotify] /me probe ok context=${context} tokenPrefix=${tokenPrefix} user=${userId || "unknown"}`,
+    );
+    spotifyUserTokenProbeCache.set(tokenPrefix, {
+      isUserToken: true,
+      checkedAt: Date.now(),
+    });
+    return;
+  }
+  console.warn(
+    `[Spotify] /me probe failed context=${context} tokenPrefix=${tokenPrefix} status=${res.status}`,
+  );
+  spotifyUserTokenProbeCache.set(tokenPrefix, {
+    isUserToken: false,
+    checkedAt: Date.now(),
+  });
+  throw new Error(
+    `[Spotify] User token is required (${context}). /me failed (${res.status}): ${summarizeSpotifyPayload(
+      json,
+    )} tokenPrefix=${tokenPrefix}`,
+  );
+}
+
+export async function validateSpotifyUserToken(
+  accessToken: string,
+  context = "spotify_api",
+): Promise<void> {
+  await ensureSpotifyUserAccessToken(accessToken, context);
+}
 
 function wait(ms: number) {
   return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function clampRetryAfterMs(
+  retryAfterSecRaw: string | null,
+  fallbackMs: number,
+  maxMs = MAX_SPOTIFY_RETRY_AFTER_MS,
+): number {
+  const sec = Number(retryAfterSecRaw ?? "");
+  if (Number.isFinite(sec) && sec > 0) {
+    return Math.max(500, Math.min(sec * 1000, maxMs));
+  }
+  return Math.max(500, Math.min(fallbackMs, maxMs));
+}
+
+function registerSpotifySearchRateLimit(retryMs: number): void {
+  spotifySearchRateLimitLastAt = Date.now();
+  spotifySearchRateLimitStrike = Math.min(8, spotifySearchRateLimitStrike + 1);
+  const strikeBackoffMs = Math.min(
+    MAX_SPOTIFY_SEARCH_RATE_LIMIT_MS,
+    Math.max(6_000, 4_000 * spotifySearchRateLimitStrike),
+  );
+  const holdMs = Math.max(retryMs, strikeBackoffMs);
+  spotifySearchRateLimitedUntil = Math.max(
+    spotifySearchRateLimitedUntil,
+    Date.now() + holdMs,
+  );
+}
+
+function registerSpotifySearchSuccess(): void {
+  spotifySearchRateLimitStrike = Math.max(0, spotifySearchRateLimitStrike - 1);
+  if (spotifySearchRateLimitStrike <= 1) {
+    spotifySearchRateLimitLastAt = 0;
+  }
+  if (spotifySearchRateLimitStrike === 0) {
+    spotifySearchRateLimitedUntil = 0;
+  }
+}
+
+function getSearchCooldownMs(): number {
+  const now = Date.now();
+  const globalRemain = Math.max(0, spotifyGlobalCooldownUntil - now);
+  const searchRemain = Math.max(0, spotifySearchRateLimitedUntil - now);
+  return Math.max(globalRemain, searchRemain);
+}
+
+function isForbiddenWriteError(err: unknown): boolean {
+  const status = (err as SpotifyApiError | undefined)?.status;
+  if (status === 403) return true;
+  const msg = String((err as Error | undefined)?.message ?? err ?? "");
+  return msg.includes("(403)") || msg.toLowerCase().includes("forbidden");
 }
 
 async function spotifyFetch(
@@ -230,7 +497,38 @@ async function spotifyFetch(
 ): Promise<Response> {
   const now = Date.now();
   if (spotifyGlobalCooldownUntil > now) {
-    await wait(spotifyGlobalCooldownUntil - now);
+    const rawWaitMs = spotifyGlobalCooldownUntil - now;
+    if (rawWaitMs > MAX_SPOTIFY_GLOBAL_COOLDOWN_MS) {
+      console.warn(
+        `[SpotifyDiag] reset abnormal global cooldown raw=${rawWaitMs}ms endpoint=${endpoint.slice(0, 80)}`,
+      );
+      spotifyGlobalCooldownUntil = 0;
+    }
+  }
+  if (spotifyGlobalCooldownUntil > Date.now()) {
+    const rawWaitMs = spotifyGlobalCooldownUntil - Date.now();
+    const isSearchEndpoint = endpoint.startsWith("/search?");
+    const cappedWaitMs = isSearchEndpoint
+      ? Math.max(0, Math.min(rawWaitMs, Math.max(1200, timeoutMs - 1500), 3500))
+      : rawWaitMs;
+    if (isSearchEndpoint) {
+      console.warn(
+        `[SpotifyDiag] search cooldown wait raw=${rawWaitMs}ms capped=${cappedWaitMs}ms timeout=${timeoutMs} endpoint=${endpoint.slice(0, 80)}`,
+      );
+    }
+    if (cappedWaitMs > 0) {
+      await wait(cappedWaitMs);
+    }
+  }
+  if (endpoint.startsWith("/search?") && spotifySearchRateLimitedUntil > Date.now()) {
+    const remain = spotifySearchRateLimitedUntil - Date.now();
+    const shortWaitMs = Math.min(remain, Math.max(400, timeoutMs - 1000), 1500);
+    if (shortWaitMs > 0) {
+      console.warn(
+        `[SpotifyDiag] search circuit wait remain=${remain}ms shortWait=${shortWaitMs}ms endpoint=${endpoint.slice(0, 80)}`,
+      );
+      await wait(shortWaitMs);
+    }
   }
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -249,29 +547,71 @@ async function spotifyFetch(
   }
 }
 
-async function spotifyGetJson<T>(accessToken: string, endpoint: string): Promise<T> {
-  const maxAttempts = 4;
+async function spotifyGetJson<T>(
+  accessToken: string,
+  endpoint: string,
+  timeoutMs?: number,
+): Promise<T> {
+  if (shouldSkipSpotifyByAuthFailure(accessToken)) {
+    throw new Error("[Spotify] authentication unavailable (cached): 인증 만료: Spotify 재로그인 필요");
+  }
+  const isSearchEndpoint = endpoint.startsWith("/search?");
+  const maxAttempts = isSearchEndpoint ? 2 : 4;
+  const baseTimeoutMs = Math.max(6500, Math.min(24000, Number(timeoutMs ?? 15000)));
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-    const res = await spotifyFetch(endpoint, {
-      headers: { Authorization: `Bearer ${accessToken}` },
-    });
+    const startedAt = Date.now();
+    const res = await Promise.race<Response>([
+      spotifyFetch(
+        endpoint,
+        {
+          headers: { Authorization: `Bearer ${accessToken}` },
+        },
+        baseTimeoutMs,
+      ),
+      new Promise<Response>((_, reject) => {
+        setTimeout(() => {
+          const elapsed = Date.now() - startedAt;
+          reject(
+            new Error(
+              `[Spotify] hard timeout ${endpoint} (${baseTimeoutMs + 3000}ms, elapsed=${elapsed}ms, attempt=${attempt})`,
+            ),
+          );
+        }, baseTimeoutMs + 3000);
+      }),
+    ]);
     const json: any = await res.json().catch(() => null);
     if (res.ok) {
+      if (isSearchEndpoint) {
+        registerSpotifySearchSuccess();
+      }
       return json as T;
     }
 
     const isRateLimited = res.status === 429;
     if (isRateLimited && attempt < maxAttempts) {
-      const retryAfterSec = Number(res.headers.get("retry-after") ?? "");
-      const retryMs = Number.isFinite(retryAfterSec) && retryAfterSec > 0
-        ? retryAfterSec * 1000
-        : attempt * 1200;
+      const retryMs = clampRetryAfterMs(
+        res.headers.get("retry-after"),
+        attempt * 1200,
+      );
       spotifyGlobalCooldownUntil = Math.max(
         spotifyGlobalCooldownUntil,
         Date.now() + retryMs,
       );
+      if (isSearchEndpoint) {
+        registerSpotifySearchRateLimit(retryMs);
+      }
       await wait(retryMs);
       continue;
+    }
+    if (isRateLimited && isSearchEndpoint) {
+      const retryMs = clampRetryAfterMs(
+        res.headers.get("retry-after"),
+        attempt * 1200,
+      );
+      registerSpotifySearchRateLimit(retryMs);
+      console.warn(
+        `[SpotifyDiag] search rate-limited give-up endpoint=${endpoint.slice(0, 120)} attempts=${attempt}`,
+      );
     }
 
     const wwwAuthenticate = String(
@@ -284,6 +624,9 @@ async function spotifyGetJson<T>(accessToken: string, endpoint: string): Promise
       rawMessage.toLowerCase().includes("scope");
     const isAuthProblem =
       res.status === 401 || /invalid_token/i.test(wwwAuthenticate);
+    if (isAuthProblem) {
+      markSpotifyAuthFailure(accessToken, `status=${res.status}`);
+    }
     const hint =
       isAuthProblem
         ? " (인증 만료: Spotify 재로그인 필요)"
@@ -316,6 +659,9 @@ async function spotifyWriteJson<T>(
   method: "POST" | "PUT" | "DELETE",
   body?: unknown,
 ): Promise<T> {
+  if (shouldSkipSpotifyByAuthFailure(accessToken)) {
+    throw new Error("[Spotify] authentication unavailable (cached): 인증 만료: Spotify 재로그인 필요");
+  }
   const maxAttempts = 4;
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     const res = await spotifyFetch(endpoint, {
@@ -332,11 +678,10 @@ async function spotifyWriteJson<T>(
     }
 
     if (res.status === 429 && attempt < maxAttempts) {
-      const retryAfterSec = Number(res.headers.get("retry-after") ?? "");
-      const retryMs =
-        Number.isFinite(retryAfterSec) && retryAfterSec > 0
-          ? retryAfterSec * 1000
-          : attempt * 1200;
+      const retryMs = clampRetryAfterMs(
+        res.headers.get("retry-after"),
+        attempt * 1200,
+      );
       spotifyGlobalCooldownUntil = Math.max(
         spotifyGlobalCooldownUntil,
         Date.now() + retryMs,
@@ -355,6 +700,9 @@ async function spotifyWriteJson<T>(
       rawMessage.toLowerCase().includes("scope");
     const isAuthProblem =
       res.status === 401 || /invalid_token/i.test(wwwAuthenticate);
+    if (isAuthProblem) {
+      markSpotifyAuthFailure(accessToken, `status=${res.status}`);
+    }
     const hint =
       isAuthProblem
         ? " (인증 만료: Spotify 재로그인 필요)"
@@ -438,10 +786,21 @@ async function replacePlaylistItems(
   }
 }
 
+async function appendPlaylistItemsInChunks(
+  accessToken: string,
+  playlistId: string,
+  uris: string[],
+): Promise<void> {
+  for (let i = 0; i < uris.length; i += 100) {
+    await addItemsToPlaylist(accessToken, playlistId, uris.slice(i, i + 100));
+  }
+}
+
 async function createMoodtunePlaylistWithRetry(args: {
   accessToken: string;
   name: string;
   description: string;
+  isPublic?: boolean;
 }): Promise<any> {
   const now = Date.now();
   if (playlistCreateCooldownUntil > now) {
@@ -457,7 +816,7 @@ async function createMoodtunePlaylistWithRetry(args: {
       },
       body: JSON.stringify({
         name: args.name,
-        public: false,
+        public: Boolean(args.isPublic),
         description: args.description,
       }),
     });
@@ -465,11 +824,11 @@ async function createMoodtunePlaylistWithRetry(args: {
     if (res.ok) return json;
 
     if (res.status === 429 && attempt < maxAttempts) {
-      const retryAfterSec = Number(res.headers.get("retry-after") ?? "");
-      const retryMs =
-        Number.isFinite(retryAfterSec) && retryAfterSec > 0
-          ? retryAfterSec * 1000
-          : Math.min(60_000, 2_000 * 2 ** (attempt - 1));
+      const retryMs = clampRetryAfterMs(
+        res.headers.get("retry-after"),
+        Math.min(60_000, 2_000 * 2 ** (attempt - 1)),
+        60_000,
+      );
       playlistCreateCooldownUntil = Math.max(
         playlistCreateCooldownUntil,
         Date.now() + retryMs,
@@ -514,11 +873,35 @@ async function getSpotifyTempoMap(
   accessToken: string,
   trackIds: string[],
 ): Promise<Record<string, number>> {
+  const featuresMap = await getSpotifyAudioFeaturesMap(accessToken, trackIds);
+  const tempoMap: Record<string, number> = {};
+  Object.entries(featuresMap).forEach(([id, features]) => {
+    const tempo = Number(features?.tempo ?? 0);
+    if (id && Number.isFinite(tempo) && tempo > 0) tempoMap[id] = tempo;
+  });
+  return tempoMap;
+}
+
+export type SpotifyAudioFeaturesSummary = {
+  energy: number;
+  valence: number;
+  danceability: number;
+  acousticness: number;
+  tempo: number;
+};
+
+export async function getSpotifyAudioFeaturesMap(
+  accessToken: string,
+  trackIds: string[],
+): Promise<Record<string, SpotifyAudioFeaturesSummary>> {
+  if (!SPOTIFY_ENABLE_METADATA_ENRICH) return {};
   if (!canUseAudioFeaturesApi) return {};
-  const uniqueIds = Array.from(new Set(trackIds.filter(Boolean)));
+  const uniqueIds = Array.from(
+    new Set(trackIds.map(v => String(v ?? "").trim()).filter(Boolean)),
+  );
   if (!uniqueIds.length) return {};
   const chunkSize = 100;
-  const tempoMap: Record<string, number> = {};
+  const out: Record<string, SpotifyAudioFeaturesSummary> = {};
 
   for (let i = 0; i < uniqueIds.length; i += chunkSize) {
     const ids = uniqueIds.slice(i, i + chunkSize).join(",");
@@ -528,20 +911,22 @@ async function getSpotifyTempoMap(
         `/audio-features?ids=${encodeURIComponent(ids)}`,
       );
       (json.audio_features ?? []).forEach((f: any) => {
-        const id = String(f?.id ?? "");
-        const tempo = Number(f?.tempo ?? 0);
-        if (id && Number.isFinite(tempo) && tempo > 0) {
-          tempoMap[id] = tempo;
-        }
+        const id = String(f?.id ?? "").trim();
+        if (!id) return;
+        out[id] = {
+          energy: Number(f?.energy ?? 0) || 0,
+          valence: Number(f?.valence ?? 0) || 0,
+          danceability: Number(f?.danceability ?? 0) || 0,
+          acousticness: Number(f?.acousticness ?? 0) || 0,
+          tempo: Number(f?.tempo ?? 0) || 0,
+        };
       });
     } catch (err) {
-      // 계정/앱 권한 상태에 따라 오디오 피처가 제한될 수 있어 전체 흐름은 유지한다.
       const msg = String((err as Error)?.message ?? err);
       if (msg.includes("(403)")) {
+        recordSpotify403Failure("audio");
         if (canUseAudioFeaturesApi) {
-          console.warn(
-            `[Spotify] audio-features unavailable: ${errorMessage(err)}`,
-          );
+          console.warn(`[Spotify] audio-features unavailable: ${errorMessage(err)}`);
         }
         canUseAudioFeaturesApi = false;
         break;
@@ -550,13 +935,14 @@ async function getSpotifyTempoMap(
     }
   }
 
-  return tempoMap;
+  return out;
 }
 
 async function getSpotifySavedMap(
   accessToken: string,
   trackIds: string[],
 ): Promise<Record<string, boolean>> {
+  if (!SPOTIFY_ENABLE_METADATA_ENRICH) return {};
   if (!canUseSavedTrackContainsApi) return {};
   const uniqueIds = Array.from(new Set(trackIds.filter(Boolean)));
   if (!uniqueIds.length) return {};
@@ -577,6 +963,7 @@ async function getSpotifySavedMap(
     } catch (err) {
       const msg = String((err as Error)?.message ?? err);
       if (msg.includes("(403)")) {
+        recordSpotify403Failure("saved");
         if (canUseSavedTrackContainsApi) {
           console.warn(
             `[Spotify] saved-track state unavailable: ${errorMessage(err)}`,
@@ -596,6 +983,7 @@ async function getSpotifyArtistGenresMap(
   accessToken: string,
   artistIds: string[],
 ): Promise<Record<string, string[]>> {
+  if (!SPOTIFY_ENABLE_METADATA_ENRICH) return {};
   if (!canUseArtistApi) return {};
   const uniqueIds = Array.from(new Set(artistIds.filter(Boolean)));
   if (!uniqueIds.length) return {};
@@ -623,6 +1011,7 @@ async function getSpotifyArtistGenresMap(
     } catch (err) {
       const msg = String((err as Error)?.message ?? err);
       if (msg.includes("(403)")) {
+        recordSpotify403Failure("artist");
         if (canUseArtistApi) {
           console.warn(
             `[Spotify] artist genres unavailable: ${errorMessage(err)}`,
@@ -642,6 +1031,7 @@ export async function getSpotifyTopTracks(
   accessToken: string,
   limit = 20,
 ): Promise<SpotifyTrackSummary[]> {
+  await ensureSpotifyUserAccessToken(accessToken, "top_tracks");
   const json = await spotifyGetJson<{ items: any[] }>(
     accessToken,
     `/me/top/tracks?time_range=medium_term&limit=${limit}`,
@@ -664,6 +1054,14 @@ export async function getSpotifyTopTracks(
         : [],
     },
   }));
+  if (!SPOTIFY_ENABLE_METADATA_ENRICH) {
+    return tracks.map(track => ({
+      ...track,
+      tempo: 0,
+      is_saved: false,
+      genres: [],
+    }));
+  }
   const [tempoMap, savedMap, artistGenreMap] = await Promise.all([
     getSpotifyTempoMap(
       accessToken,
@@ -696,6 +1094,7 @@ export async function getSpotifyTopArtists(
   accessToken: string,
   limit = 20,
 ): Promise<SpotifyArtistSummary[]> {
+  await ensureSpotifyUserAccessToken(accessToken, "top_artists");
   const json = await spotifyGetJson<{ items: any[] }>(
     accessToken,
     `/me/top/artists?time_range=medium_term&limit=${limit}`,
@@ -706,6 +1105,105 @@ export async function getSpotifyTopArtists(
     genres: Array.isArray(item?.genres) ? item.genres.map((g: any) => String(g)) : [],
     popularity: Number(item?.popularity ?? 0),
   }));
+}
+
+export async function getSpotifyRecommendations(
+  args: SpotifyRecommendationArgs,
+): Promise<SpotifyTrackSummary[]> {
+  try {
+    await ensureSpotifyUserAccessToken(args.accessToken, "recommendations");
+  } catch (err) {
+    console.warn(`[Spotify] recommendations skipped: ${errorMessage(err)}`);
+    return [];
+  }
+  const cleanIds = (values?: string[]): string[] =>
+    Array.from(
+      new Set(
+        (values ?? [])
+          .map(v => String(v ?? "").trim())
+          .filter(Boolean),
+      ),
+    );
+  const cleanGenres = (values?: string[]): string[] =>
+    Array.from(
+      new Set(
+        (values ?? [])
+          .map(v =>
+            String(v ?? "")
+              .trim()
+              .toLowerCase()
+              .replace(/[^a-z0-9-]/g, ""),
+          )
+          .filter(Boolean),
+      ),
+    );
+  const clampFloat = (value: number, min: number, max: number): number =>
+    Math.min(max, Math.max(min, value));
+  const cleaned = {
+    artists: cleanIds(args.seedArtists).slice(0, 5),
+    tracks: cleanIds(args.seedTracks).slice(0, 5),
+    genres: cleanGenres(args.seedGenres).slice(0, 5),
+  };
+  while (cleaned.artists.length + cleaned.tracks.length + cleaned.genres.length > 5) {
+    if (cleaned.genres.length > 0) {
+      cleaned.genres.pop();
+      continue;
+    }
+    if (cleaned.tracks.length > 0) {
+      cleaned.tracks.pop();
+      continue;
+    }
+    cleaned.artists.pop();
+  }
+  if (!cleaned.artists.length && !cleaned.tracks.length && !cleaned.genres.length) {
+    return [];
+  }
+
+  const params = new URLSearchParams();
+  params.set("limit", String(Math.max(1, Math.min(100, Math.floor(args.limit ?? 40)))));
+  params.set("market", "KR");
+  if (cleaned.artists.length) params.set("seed_artists", cleaned.artists.join(","));
+  if (cleaned.tracks.length) params.set("seed_tracks", cleaned.tracks.join(","));
+  if (cleaned.genres.length) params.set("seed_genres", cleaned.genres.join(","));
+  if (Number.isFinite(args.targetEnergy)) {
+    params.set("target_energy", String(clampFloat(Number(args.targetEnergy), 0, 1)));
+  }
+  if (Number.isFinite(args.targetValence)) {
+    params.set("target_valence", String(clampFloat(Number(args.targetValence), 0, 1)));
+  }
+  if (Number.isFinite(args.targetAcousticness)) {
+    params.set(
+      "target_acousticness",
+      String(clampFloat(Number(args.targetAcousticness), 0, 1)),
+    );
+  }
+  if (Number.isFinite(args.targetTempo) && Number(args.targetTempo) > 0) {
+    params.set("target_tempo", String(Math.round(Number(args.targetTempo))));
+  }
+  if (Number.isFinite(args.minTempo) && Number(args.minTempo) > 0) {
+    params.set("min_tempo", String(Math.round(Number(args.minTempo))));
+  }
+  if (Number.isFinite(args.maxTempo) && Number(args.maxTempo) > 0) {
+    params.set("max_tempo", String(Math.round(Number(args.maxTempo))));
+  }
+
+  try {
+    const json = await spotifyGetJson<{ tracks?: any[] }>(
+      args.accessToken,
+      `/recommendations?${params.toString()}`,
+      7_500,
+    );
+    return (json.tracks ?? []).map(mapTrackItemToSummary);
+  } catch (err) {
+    const status = (err as SpotifyApiError | undefined)?.status;
+    const msg = String((err as Error)?.message ?? err);
+    if (status === 404 || msg.includes("(404)")) {
+      console.warn("[Spotify] recommendations unavailable in current app mode.");
+      return [];
+    }
+    console.warn(`[Spotify] recommendations request failed: ${errorMessage(err)}`);
+    return [];
+  }
 }
 
 export async function getSpotifyPlaylists(
@@ -844,17 +1342,13 @@ export async function getSpotifyPlaylistTracks(args: {
   const pageSize = 100;
   async function fetchPaged(
     endpointKind: "items" | "tracks",
-    useOwnerPath = false,
   ): Promise<any[]> {
     const rows: any[] = [];
     let offset = 0;
     while (offset < safeMax) {
       const rest = safeMax - offset;
       const fetchLimit = Math.min(pageSize, rest);
-      const basePath =
-        useOwnerPath && args.ownerId
-          ? `/users/${encodeURIComponent(args.ownerId)}/playlists/${encodeURIComponent(args.playlistId)}`
-          : `/playlists/${encodeURIComponent(args.playlistId)}`;
+      const basePath = `/playlists/${encodeURIComponent(args.playlistId)}`;
       let json: { items: any[]; next?: string | null };
       try {
         json = await spotifyGetJson<{ items: any[]; next?: string | null }>(
@@ -884,8 +1378,6 @@ export async function getSpotifyPlaylistTracks(args: {
       );
       return (oneShot.tracks?.items ?? []).slice(0, safeMax);
     },
-    () => fetchPaged("items", true),
-    () => fetchPaged("tracks", true),
   ];
 
   let lastErr: unknown = null;
@@ -924,6 +1416,7 @@ export async function getSpotifyRecentlyPlayed(
   accessToken: string,
   limit = 20,
 ): Promise<SpotifyTrackSummary[]> {
+  await ensureSpotifyUserAccessToken(accessToken, "recently_played");
   const json = await spotifyGetJson<{ items: any[] }>(
     accessToken,
     `/me/player/recently-played?limit=${limit}`,
@@ -949,6 +1442,14 @@ export async function getSpotifyRecentlyPlayed(
       },
     };
   });
+  if (!SPOTIFY_ENABLE_METADATA_ENRICH) {
+    return tracks.map(track => ({
+      ...track,
+      tempo: 0,
+      is_saved: false,
+      genres: [],
+    }));
+  }
   const [tempoMap, savedMap, artistGenreMap] = await Promise.all([
     getSpotifyTempoMap(
       accessToken,
@@ -1026,6 +1527,24 @@ const SEARCH_STOPWORDS = new Set([
   "있는",
   "하게",
   "좋은",
+  "신나는",
+  "잔잔한",
+  "차분한",
+  "집중",
+  "공부",
+  "작업",
+  "업무",
+  "운동",
+  "드라이브",
+  "카페",
+  "무드",
+  "상황",
+  "핵심",
+  "제외",
+  "시간",
+  "이상",
+  "이내",
+  "내외",
 ]);
 
 function normalizeSearchText(raw: string): string {
@@ -1036,18 +1555,76 @@ function normalizeSearchText(raw: string): string {
     .trim();
 }
 
+function hasStructuredSearchTag(query: string): boolean {
+  return /\b(genre|artist|track)\s*:/.test(String(query ?? "").toLowerCase());
+}
+
+function normalizeTagQuery(query: string): string {
+  return String(query ?? "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 96);
+}
+
+function queryEquivalenceKey(query: string): string {
+  const q = String(query ?? "").trim();
+  if (!q) return "";
+  if (hasStructuredSearchTag(q)) return `tag:${normalizeTagQuery(q).toLowerCase()}`;
+  const compacted = compactQuery(q);
+  return `plain:${normalizeSearchText(compacted).toLowerCase()}`;
+}
+
+function buildQueryCandidates(rawQuery: string, fastMode: boolean): string[] {
+  const raw = String(rawQuery ?? "").trim();
+  if (!raw) return [];
+  const compacted = compactQuery(raw);
+  const shortPair = trimQueryTokens(compacted, 2);
+  const base = fastMode
+    ? [raw, compacted, shortPair]
+    : [raw, compacted, trimQueryTokens(raw, 6), shortPair];
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const candidate of base) {
+    const c = String(candidate ?? "").trim();
+    if (!c) continue;
+    const key = queryEquivalenceKey(c);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    out.push(c);
+  }
+  return out;
+}
+
 function trimQueryTokens(query: string, maxTokens = 6): string {
   const tokens = query.split(" ").filter(Boolean).slice(0, maxTokens);
   return tokens.join(" ").slice(0, 64).trim();
 }
 
+function extractQueryHintKeywords(query: string): string[] {
+  const normalized = normalizeSearchText(query);
+  if (!normalized) return [];
+  return Array.from(
+    new Set(
+      normalized
+        .split(" ")
+        .map(v => v.trim())
+        .filter(v => v.length >= 2 && !SEARCH_STOPWORDS.has(v)),
+    ),
+  ).slice(0, 4);
+}
+
 function buildSearchQueries(moodInput: string): string[] {
+  if (hasStructuredSearchTag(moodInput)) {
+    const raw = normalizeTagQuery(moodInput);
+    const tagFree = extractTagFreeSearchQuery(raw);
+    return Array.from(new Set([raw, tagFree].filter(v => String(v ?? "").length >= 2))).slice(0, 8);
+  }
   const normalized = normalizeSearchText(moodInput);
   if (!normalized) return [];
 
   const clauses = normalized
     .split(/\n+|[.!?]| 그리고 |,|\/|\|/g)
-    .map(v => trimQueryTokens(v.trim(), 6))
+    .map(v => compactQuery(v.trim()))
     .filter(v => v.length >= 2);
 
   const tokens = normalized
@@ -1062,7 +1639,7 @@ function buildSearchQueries(moodInput: string): string[] {
 
   return Array.from(
     new Set(
-      [trimQueryTokens(normalized, 6), ...clauses, ...twoGrams]
+      [...clauses, ...twoGrams, trimQueryTokens(tokens.join(" "), 5)]
         .map(v => trimQueryTokens(v, 6))
         .filter(v => v.length >= 2),
     ),
@@ -1107,13 +1684,67 @@ function buildUserAffinityQueries(
 }
 
 function compactQuery(query: string): string {
+  if (hasStructuredSearchTag(query)) return normalizeTagQuery(query);
   const normalized = normalizeSearchText(query);
   const tokens = normalized
     .split(" ")
     .map(v => v.trim())
     .filter(v => v.length >= 2 && !SEARCH_STOPWORDS.has(v));
   if (!tokens.length) return trimQueryTokens(normalized, 3);
-  return trimQueryTokens(tokens.join(" "), 3);
+  return trimQueryTokens(tokens.join(" "), 5);
+}
+
+function extractTagFreeSearchQuery(query: string): string {
+  const q = String(query ?? "").trim();
+  if (!q) return "";
+  const withoutTag = q
+    .replace(/\b(genre|artist|track)\s*:\s*"[^\"]*"/gi, " ")
+    .replace(/\b(genre|artist|track)\s*:\s*[^\s]+/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  const retry = buildRetrySearchQuery(withoutTag || q);
+  if (retry) return retry;
+  return trimQueryTokens(normalizeSearchText(withoutTag || q), 4);
+}
+
+function buildRetrySearchQuery(rawQuery: string): string {
+  const aliasMap: Array<[RegExp, string]> = [
+    [/\bk[\s-]?pop\b|케이팝|케이 팝|k pop/i, "kpop"],
+    [/멜로디\s*힙합|melodic\s*hip[\s-]?hop/i, "melodic hip hop"],
+    [/\bhip[\s-]?hop\b|힙합|랩/i, "hip hop"],
+    [/발라드|ballad/i, "korean ballad"],
+    [/\br[\s&-]?n[\s&-]?b\b|알앤비/i, "korean rnb"],
+    [/인디|indie/i, "korean indie"],
+    [/\bedm\b|일렉|electronic/i, "edm"],
+    [/신나|업템포|에너지|파티/i, "upbeat"],
+    [/차분|잔잔|편안|힐링/i, "chill"],
+  ];
+  const normalized = normalizeSearchText(rawQuery);
+  const aliases = aliasMap
+    .filter(([re]) => re.test(normalized))
+    .map(([, value]) => value);
+  const tokenFallback = normalized
+    .split(" ")
+    .map(v => v.trim())
+    .filter(v => v.length >= 2 && !SEARCH_STOPWORDS.has(v))
+    .filter(v => !/^(추가|요청|준비|준비하면서|기분|좋게|약속|듣기|재생)$/.test(v))
+    .slice(0, 2);
+  const merged = Array.from(new Set([...aliases, ...tokenFallback]));
+  return trimQueryTokens(merged.join(" "), 4);
+}
+
+function sanitizeSearchQueryForSpotify(rawQuery: string): string {
+  const normalized = normalizeSearchText(rawQuery);
+  if (!normalized) return "";
+  const aliases = buildRetrySearchQuery(normalized);
+  if (aliases) return aliases;
+  const fallback = normalized
+    .split(" ")
+    .map(v => v.trim())
+    .filter(v => v.length >= 2 && !SEARCH_STOPWORDS.has(v))
+    .slice(0, 3)
+    .join(" ");
+  return trimQueryTokens(fallback, 3);
 }
 
 function trackKey(summary: SpotifyTrackSummary): string {
@@ -1121,7 +1752,11 @@ function trackKey(summary: SpotifyTrackSummary): string {
   if (id) return `id:${id}`;
   const uri = String(summary?.uri ?? "").trim();
   if (uri) return `uri:${uri}`;
-  const name = String(summary?.name ?? "").toLowerCase().trim();
+  const name = String(summary?.name ?? "")
+    .toLowerCase()
+    .replace(/\b(remaster(ed)?|live|version|edit|mono|stereo)\b/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
   const artists = (summary?.artists ?? [])
     .map(a => String(a?.name ?? "").toLowerCase().trim())
     .filter(Boolean)
@@ -1153,29 +1788,136 @@ function mapTrackItemToSummary(item: any): SpotifyTrackSummary {
   };
 }
 
+async function searchPlaylistTracksByQuery(args: {
+  accessToken: string;
+  query: string;
+  deadlineAt: number;
+  targetCount?: number;
+}): Promise<SpotifyTrackSummary[]> {
+  const q = String(args.query ?? "").trim();
+  if (!q) return [];
+  const remainingMs = Math.max(0, args.deadlineAt - Date.now());
+  if (remainingMs <= 1400) return [];
+  const timeoutMs = Math.max(2200, Math.min(6500, remainingMs - 120));
+  const targetCount = clamp(args.targetCount ?? 18, 6, 30);
+  try {
+    const searchParams = new URLSearchParams();
+    searchParams.set("type", "playlist");
+    searchParams.set("limit", "3");
+    searchParams.set("market", "from_token");
+    searchParams.set("q", q);
+    const playlistJson = await spotifyGetJson<{ playlists?: { items?: any[] } }>(
+      args.accessToken,
+      `/search?${searchParams.toString()}`,
+      timeoutMs,
+    );
+    const playlists = (playlistJson?.playlists?.items ?? [])
+      .map(p => String(p?.id ?? "").trim())
+      .filter(Boolean)
+      .slice(0, 3);
+    if (!playlists.length) return [];
+    const out: SpotifyTrackSummary[] = [];
+    for (const playlistId of playlists) {
+      if (Date.now() >= args.deadlineAt) break;
+      const remain = Math.max(0, args.deadlineAt - Date.now());
+      if (remain <= 1300) break;
+      const trackTimeout = Math.max(2000, Math.min(5000, remain - 120));
+      const trackParams = new URLSearchParams();
+      trackParams.set("limit", "18");
+      trackParams.set("market", "from_token");
+      const tracksJson = await spotifyGetJson<{ items?: any[] }>(
+        args.accessToken,
+        `/playlists/${encodeURIComponent(playlistId)}/tracks?${trackParams.toString()}`,
+        trackTimeout,
+      );
+      const items = tracksJson?.items ?? [];
+      for (const row of items) {
+        const track = row?.track;
+        if (!track?.id) continue;
+        out.push(mapTrackItemToSummary(track));
+        if (out.length >= targetCount) break;
+      }
+      if (out.length >= targetCount) break;
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
+
 export async function discoverSpotifyTracks(args: {
   accessToken: string;
   moodInput: string;
   bootstrap: SpotifyBootstrapData | null;
   limit?: number;
+  seedTrackIds?: string[];
+  seedArtistIds?: string[];
+  enrichMetadata?: boolean;
+  fastMode?: boolean;
+  maxSearchQueries?: number;
+  includeAffinityQueries?: boolean;
+  maxDurationMs?: number;
 }): Promise<SpotifyTrackSummary[]> {
-  const { accessToken, moodInput, bootstrap, limit = 80 } = args;
+  const {
+    accessToken,
+    moodInput,
+    bootstrap,
+    limit = 80,
+    seedTrackIds = [],
+    seedArtistIds = [],
+    enrichMetadata = false,
+    fastMode = true,
+    maxSearchQueries = 4,
+    includeAffinityQueries = true,
+    maxDurationMs,
+  } = args;
+  const startedAt = Date.now();
+  const deadlineAt =
+    Number.isFinite(maxDurationMs) && Number(maxDurationMs) > 0
+      ? startedAt + Math.max(2500, Number(maxDurationMs))
+      : Number.POSITIVE_INFINITY;
+  const isDeadlineReached = () => Date.now() >= deadlineAt;
+  const moodQueries = buildSearchQueries(moodInput);
+  const affinityQueries = includeAffinityQueries
+    ? buildUserAffinityQueries(bootstrap)
+    : [];
+  const affinityCap =
+    moodQueries.length >= 5 ? 2 : moodQueries.length >= 3 ? 3 : 5;
+  const requestedFastMax = Math.max(1, Math.min(2, Math.floor(maxSearchQueries)));
+  const effectiveFastMax =
+    moodQueries.length >= 2 ? Math.max(2, requestedFastMax) : requestedFastMax;
   const searchQueries = Array.from(
-    new Set([
-      ...buildSearchQueries(moodInput),
-      ...buildUserAffinityQueries(bootstrap),
-    ]),
-  ).slice(0, 12);
+    new Set([...moodQueries, ...affinityQueries.slice(0, affinityCap)]),
+  ).slice(
+    0,
+    fastMode
+      ? effectiveFastMax
+      : Math.max(2, Math.min(12, Math.floor(maxSearchQueries))),
+  );
 
   const collected: SpotifyTrackSummary[] = [];
-  const searchLimitCandidates = [20, 10, 5];
+  const searchLimitCandidates = fastMode ? [18] : [20, 10];
+  const searchRequestTimeoutMs = fastMode ? 7000 : 12000;
+  const internalDeadlineAt = fastMode
+    ? Date.now() + Math.max(4500, Math.min(8500, Math.max(1, maxSearchQueries) * 3200))
+    : Number.POSITIVE_INFINITY;
+  let compactedSkipCount = 0;
+  let compactedSkipLogged = 0;
+  let attemptedTrackSearchCalls = 0;
+  let playlistFallbackCalls = 0;
+  let authFailureDetected = false;
   for (const rawQuery of searchQueries) {
-    const queryCandidates = Array.from(
-      new Set([rawQuery, compactQuery(rawQuery)].filter(Boolean)),
-    );
-    let success = false;
+    if (authFailureDetected) break;
+    if (Date.now() >= internalDeadlineAt || isDeadlineReached()) break;
+    const queryHintKeywords = extractQueryHintKeywords(rawQuery);
+    const queryCandidates = buildQueryCandidates(rawQuery, fastMode);
+    let rawQueryCollected = 0;
     for (const q of queryCandidates) {
+      if (authFailureDetected) break;
+      if (Date.now() >= internalDeadlineAt || isDeadlineReached()) break;
       for (const rawLimit of searchLimitCandidates) {
+        if (authFailureDetected) break;
+        if (Date.now() >= internalDeadlineAt || isDeadlineReached()) break;
         const safeLimit = clamp(rawLimit, 1, 50);
         const params = new URLSearchParams();
         params.set("type", "track");
@@ -1183,42 +1925,198 @@ export async function discoverSpotifyTracks(args: {
         params.set("market", "from_token");
         params.set("q", q);
         try {
+          attemptedTrackSearchCalls += 1;
+          const remainingMs = Math.max(0, deadlineAt - Date.now());
+          if (remainingMs <= 1200) break;
+          const requestTimeoutMs = Math.max(
+            2500,
+            Math.min(searchRequestTimeoutMs, remainingMs - 120),
+          );
           const json = await spotifyGetJson<{ tracks?: { items?: any[] } }>(
             accessToken,
             `/search?${params.toString()}`,
+            requestTimeoutMs,
           );
           const items = json?.tracks?.items ?? [];
-          collected.push(...items.map(mapTrackItemToSummary));
-          success = items.length > 0;
-          break;
+          collected.push(
+            ...items.map(item => {
+              const mapped = mapTrackItemToSummary(item);
+              if (!queryHintKeywords.length) return mapped;
+              return {
+                ...mapped,
+                genres: Array.from(
+                  new Set([
+                    ...(Array.isArray(mapped.genres) ? mapped.genres : []),
+                    ...queryHintKeywords,
+                  ]),
+                ).slice(0, 5),
+              };
+            }),
+          );
+          rawQueryCollected += items.length;
+          if (rawQueryCollected >= (fastMode ? 10 : 22)) break;
         } catch (err) {
           const msg = String((err as Error)?.message ?? err);
+          if (isSpotifyAuthErrorMessage(msg)) {
+            authFailureDetected = true;
+            markSpotifyAuthFailure(accessToken, "discover-search");
+            break;
+          }
           if (msg.includes("Invalid limit")) continue;
           if (msg.includes("(400)")) {
-            // 잘못된 검색식은 축약된 후보로 계속 진행
+            const safeQ = sanitizeSearchQueryForSpotify(q);
+            if (safeQ && safeQ !== q) {
+              try {
+                const retryParams = new URLSearchParams();
+                retryParams.set("type", "track");
+                retryParams.set("limit", String(safeLimit));
+                retryParams.set("market", "from_token");
+                retryParams.set("q", safeQ);
+                const remainingMs = Math.max(0, deadlineAt - Date.now());
+                if (remainingMs > 1200) {
+                  const retryTimeoutMs = Math.max(
+                    2500,
+                    Math.min(searchRequestTimeoutMs, remainingMs - 120),
+                  );
+                  const retryJson = await spotifyGetJson<{ tracks?: { items?: any[] } }>(
+                    accessToken,
+                    `/search?${retryParams.toString()}`,
+                    retryTimeoutMs,
+                  );
+                  const retryItems = retryJson?.tracks?.items ?? [];
+                  collected.push(...retryItems.map(mapTrackItemToSummary));
+                  rawQueryCollected += retryItems.length;
+                  if (retryItems.length) continue;
+                }
+              } catch (retryErr) {
+                if (isSpotifyAuthErrorMessage(retryErr)) {
+                  authFailureDetected = true;
+                  markSpotifyAuthFailure(accessToken, "discover-search-retry");
+                }
+              }
+            }
+            console.warn(`[Spotify] track search 400. raw="${q}" sanitized="${safeQ || "-"}"`);
             break;
           }
           console.warn(`[Spotify] track search failed: ${errorMessage(err)}`);
           break;
         }
       }
-      if (success) break;
+      if (rawQueryCollected >= (fastMode ? 10 : 22)) break;
     }
-    if (!success) {
-      const sample = compactQuery(rawQuery);
-      if (sample) {
-        console.warn("[Spotify] track search skipped for compacted query.");
+    if (rawQueryCollected === 0) {
+      const retryQuery = buildRetrySearchQuery(rawQuery);
+      if (retryQuery) {
+        try {
+          const params = new URLSearchParams();
+          params.set("type", "track");
+          params.set("limit", "12");
+          params.set("market", "from_token");
+          params.set("q", retryQuery);
+          const remainingMs = Math.max(0, deadlineAt - Date.now());
+          if (remainingMs > 1400) {
+            const requestTimeoutMs = Math.max(
+              2500,
+              Math.min(searchRequestTimeoutMs, remainingMs - 120),
+            );
+            const json = await spotifyGetJson<{ tracks?: { items?: any[] } }>(
+              accessToken,
+              `/search?${params.toString()}`,
+              requestTimeoutMs,
+            );
+            const items = json?.tracks?.items ?? [];
+            if (items.length) {
+              collected.push(...items.map(mapTrackItemToSummary));
+              rawQueryCollected += items.length;
+            }
+          }
+        } catch {
+          // noop
+        }
+      }
+      if (rawQueryCollected === 0) {
+        const tagFree = extractTagFreeSearchQuery(rawQuery);
+        if (tagFree && tagFree !== retryQuery) {
+          try {
+            const params = new URLSearchParams();
+            params.set("type", "track");
+            params.set("limit", "12");
+            params.set("market", "from_token");
+            params.set("q", tagFree);
+            const remainingMs = Math.max(0, deadlineAt - Date.now());
+            if (remainingMs > 1400) {
+              const requestTimeoutMs = Math.max(
+                2500,
+                Math.min(searchRequestTimeoutMs, remainingMs - 120),
+              );
+              const json = await spotifyGetJson<{ tracks?: { items?: any[] } }>(
+                accessToken,
+                `/search?${params.toString()}`,
+                requestTimeoutMs,
+              );
+              const items = json?.tracks?.items ?? [];
+              if (items.length) {
+                collected.push(...items.map(mapTrackItemToSummary));
+                rawQueryCollected += items.length;
+              }
+            }
+          } catch {
+            // noop
+          }
+        }
+      }
+      if (rawQueryCollected === 0) {
+        const playlistFallback = await searchPlaylistTracksByQuery({
+          accessToken,
+          query: rawQuery,
+          deadlineAt,
+          targetCount: fastMode ? 12 : 18,
+        });
+        if (playlistFallback.length) {
+          playlistFallbackCalls += 1;
+          console.warn(`[Spotify] playlist fallback used size=${playlistFallback.length}`);
+          collected.push(...playlistFallback);
+          rawQueryCollected += playlistFallback.length;
+        }
+      }
+      if (rawQueryCollected === 0) {
+        const sample = compactQuery(rawQuery);
+        if (sample && !hasStructuredSearchTag(rawQuery)) {
+          compactedSkipCount += 1;
+          if (compactedSkipLogged < 2) {
+            compactedSkipLogged += 1;
+            console.warn("[Spotify] no results after compacted query attempts.");
+          }
+        }
       }
     }
   }
+  if (compactedSkipCount > 2) {
+    console.warn(`[Spotify] no results after compacted query attempts x${compactedSkipCount}`);
+  }
+  if (fastMode) {
+    console.warn(
+      `[Spotify] fast search stats queries=${searchQueries.length} attempts=${attemptedTrackSearchCalls} compactedNoResult=${compactedSkipCount} playlistFallback=${playlistFallbackCalls} collected=${collected.length}`,
+    );
+  }
 
   try {
-    const seedTracks = (bootstrap?.topTracks ?? [])
-      .map(t => t.id)
+    if (fastMode) {
+      // fastMode에서는 search 결과 우선으로 빠르게 반환한다.
+      throw new Error("skip_recommendations_in_fast_mode");
+    }
+    const seedTracks = (
+      seedTrackIds.length
+        ? seedTrackIds
+        : (bootstrap?.topTracks ?? []).map(t => t.id)
+    )
       .filter(Boolean)
       .slice(0, 3);
-    const seedArtists = (bootstrap?.topArtists ?? [])
-      .map(a => a.id)
+    const seedArtists = (
+      seedArtistIds.length
+        ? seedArtistIds
+        : (bootstrap?.topArtists ?? []).map(a => a.id)
+    )
       .filter(Boolean)
       .slice(0, 2);
     const params = new URLSearchParams();
@@ -1234,6 +2132,9 @@ export async function discoverSpotifyTracks(args: {
     }
   } catch (err) {
     const msg = String((err as Error)?.message ?? err);
+    if (msg.includes("skip_recommendations_in_fast_mode")) {
+      // noop
+    } else
     if (msg.includes("(404)") || msg.includes("/recommendations?")) {
       console.warn("[Spotify] recommendations unavailable in current app mode.");
       canUseRecommendationsApi = false;
@@ -1249,6 +2150,17 @@ export async function discoverSpotifyTracks(args: {
     if (!dedup.has(key)) dedup.set(key, t);
   });
   const base = Array.from(dedup.values()).slice(0, Math.max(20, limit));
+
+  if (!enrichMetadata) {
+    return shuffle(
+      base.map(track => ({
+        ...track,
+        tempo: Number(track.tempo ?? 0) || 0,
+        is_saved: Boolean(track.is_saved),
+        genres: Array.isArray(track.genres) ? track.genres.slice(0, 3) : [],
+      })),
+    ).slice(0, limit);
+  }
 
   const [tempoMap, savedMap, artistGenreMap] = await Promise.all([
     getSpotifyTempoMap(
@@ -1281,6 +2193,371 @@ export async function discoverSpotifyTracks(args: {
   ).slice(0, limit);
 }
 
+export async function searchSpotifyTracksByQueries(args: {
+  accessToken: string;
+  queries: string[];
+  perQueryLimit?: number;
+  maxDurationMs?: number;
+  concurrency?: number;
+  randomSeed?: number;
+  requestId?: string;
+  abortSignal?: AbortSignal;
+  onQueryDone?: (event: {
+    requestId?: string;
+    query: string;
+    done: number;
+    total: number;
+    queryIndex: number;
+    added: number;
+    totalCollected: number;
+  }) => void;
+  onTracks?: (event: {
+    requestId?: string;
+    query: string;
+    queryIndex: number;
+    queryTotal: number;
+    tracks: SpotifyTrackSummary[];
+    totalCollected: number;
+  }) => void;
+  shouldStop?: (event: {
+    requestId?: string;
+    done: number;
+    total: number;
+    totalCollected: number;
+    lastQuery: string;
+  }) => boolean;
+}): Promise<SpotifyTrackSummary[]> {
+  const isAborted = () => Boolean(args.abortSignal?.aborted);
+  if (isAborted()) return [];
+  await ensureSpotifyUserAccessToken(args.accessToken, "search_tracks");
+  const normalizeDirectSearchText = (raw: string): string =>
+    String(raw ?? "")
+      .replace(/[^0-9A-Za-z가-힣\s:"'&-]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+  const startedAt = Date.now();
+  const deadlineAt =
+    Number.isFinite(args.maxDurationMs) && Number(args.maxDurationMs) > 0
+      ? startedAt + Math.max(2000, Number(args.maxDurationMs))
+      : Number.POSITIVE_INFINITY;
+  const perQueryLimit = clamp(args.perQueryLimit ?? 30, 5, 50);
+  const searchCooldownMs = getSearchCooldownMs();
+  const isSearchLimitedMode = searchCooldownMs > 0;
+  const effectivePerQueryLimit = isSearchLimitedMode
+    ? clamp(Math.min(perQueryLimit, 12), 5, 12)
+    : perQueryLimit;
+  const dedup = new Map<string, SpotifyTrackSummary>();
+  let authFailureDetected = shouldSkipSpotifyByAuthFailure(args.accessToken);
+  const normalizedQueries = Array.from(
+    new Set(
+      (args.queries ?? [])
+        .map(q => normalizeDirectSearchText(String(q ?? "").toLowerCase().trim()))
+        .map(q => String(q ?? "").slice(0, 64).trim())
+        .filter(q => q.length >= 2),
+    ),
+  );
+  const runnableQueries = normalizedQueries.slice(0, Math.max(4, normalizedQueries.length));
+  const runnableLimited = runnableQueries.slice(0, Math.max(4, runnableQueries.length));
+  console.warn("[SpotifySearchInternal] inputQueries=", args.queries ?? []);
+  console.warn("[SpotifySearchInternal] normalizedQueries=", normalizedQueries);
+  console.warn("[SpotifySearchInternal] runnableQueries=", runnableLimited);
+  console.warn("[SpotifySearchInternal] finalBatchCount=", runnableLimited.length);
+  if (isSearchLimitedMode) {
+    console.warn(
+      `[SpotifyDiag] search limited mode cooldownMs=${searchCooldownMs} strike=${spotifySearchRateLimitStrike}`,
+    );
+  }
+  const budgetMs = Number.isFinite(args.maxDurationMs) && Number(args.maxDurationMs) > 0
+    ? Number(args.maxDurationMs)
+    : 9000;
+  const requestedConcurrency = clamp(args.concurrency ?? 6, 2, 6);
+  const dynamicConcurrencyBase = Math.max(
+    2,
+    Math.min(
+      requestedConcurrency,
+      runnableLimited.length >= 6 ? 4 : requestedConcurrency,
+      budgetMs <= 4500 ? 4 : requestedConcurrency,
+      budgetMs <= 3200 ? 3 : requestedConcurrency,
+    ),
+  );
+  const dynamicConcurrency = isSearchLimitedMode ? 1 : dynamicConcurrencyBase;
+  const maxQueryCount = runnableLimited.length;
+  const dynamicQueryCount = isSearchLimitedMode
+    ? Math.max(1, Math.min(2, maxQueryCount))
+    : Math.max(
+        4,
+        Math.min(
+          maxQueryCount,
+          runnableLimited.length,
+        ),
+      );
+  const parallelQueries = runnableLimited.slice(0, dynamicQueryCount);
+  let completedQueryCount = 0;
+  let totalCollected = 0;
+  let rateLimitedFailures = 0;
+  const totalQueryCount = parallelQueries.length;
+  const mergeTracks = (tracks: SpotifyTrackSummary[]): SpotifyTrackSummary[] => {
+    const added: SpotifyTrackSummary[] = [];
+    for (const mapped of tracks) {
+      const key = trackKey(mapped);
+      if (!key || dedup.has(key)) continue;
+      dedup.set(key, mapped);
+      added.push(mapped);
+    }
+    return added;
+  };
+  const notifyQueryDone = (query: string, queryIndex: number, addedCount: number) => {
+    completedQueryCount += 1;
+    totalCollected = dedup.size;
+    args.onQueryDone?.({
+      requestId: args.requestId,
+      query,
+      done: completedQueryCount,
+      total: totalQueryCount,
+      queryIndex,
+      added: addedCount,
+      totalCollected,
+    });
+  };
+
+  const runSingleQuery = async (q: string, queryIdx: number): Promise<number> => {
+    const out: SpotifyTrackSummary[] = [];
+    let queryAdded = 0;
+    const emitFoundNow = (tracks: SpotifyTrackSummary[]) => {
+      if (!tracks.length) return;
+      const added = mergeTracks(tracks);
+      if (added.length) {
+        queryAdded += added.length;
+      }
+      console.warn("[SEARCH onTracks emit]", {
+        requestId: args.requestId,
+        query: q,
+        count: tracks.length,
+      });
+      args.onTracks?.({
+        requestId: args.requestId,
+        query: q,
+        queryIndex: queryIdx,
+        queryTotal: totalQueryCount,
+        tracks,
+        totalCollected: dedup.size + tracks.length,
+      });
+    };
+    const offset = 0;
+    try {
+      if (isAborted()) return queryAdded;
+      if (authFailureDetected) return queryAdded;
+      if (Date.now() >= deadlineAt) return queryAdded;
+      const params = new URLSearchParams();
+      params.set("type", "track");
+      params.set("limit", String(effectivePerQueryLimit));
+      params.set("market", "from_token");
+      params.set("q", q);
+      params.set("offset", String(offset));
+      const remainingMs = Math.max(0, deadlineAt - Date.now());
+      if (remainingMs <= 800) return queryAdded;
+      const timeoutMs = Math.max(2200, Math.min(9000, remainingMs - 120));
+      const json = await spotifyGetJson<{ tracks?: { items?: any[] } }>(
+        args.accessToken,
+        `/search?${params.toString()}`,
+        timeoutMs,
+      );
+      if (isAborted()) return queryAdded;
+      const items = json?.tracks?.items ?? [];
+      const mappedItems = items.map(mapTrackItemToSummary);
+      out.push(...mappedItems);
+      emitFoundNow(mappedItems);
+      console.warn("[SpotifySearchInternal] queryDone=", q, "found=", mappedItems.length);
+      if (!items.length) {
+        const fallbackQuery = extractTagFreeSearchQuery(q);
+        if (fallbackQuery && fallbackQuery !== q && Date.now() < deadlineAt) {
+          try {
+            const retry = new URLSearchParams();
+            retry.set("type", "track");
+            retry.set("limit", String(effectivePerQueryLimit));
+            retry.set("market", "from_token");
+            retry.set("q", fallbackQuery);
+            retry.set("offset", String(Math.max(0, offset - perQueryLimit)));
+            const remain = Math.max(0, deadlineAt - Date.now());
+            if (remain > 800) {
+              const fallbackTimeoutMs = Math.max(2200, Math.min(8500, remain - 120));
+              const retryJson = await spotifyGetJson<{ tracks?: { items?: any[] } }>(
+                args.accessToken,
+                `/search?${retry.toString()}`,
+                fallbackTimeoutMs,
+              );
+              if (isAborted()) return queryAdded;
+              const retryItems = retryJson?.tracks?.items ?? [];
+              const mappedRetryItems = retryItems.map(mapTrackItemToSummary);
+              out.push(...mappedRetryItems);
+              emitFoundNow(mappedRetryItems);
+              console.warn("[SpotifySearchInternal] queryDone(tagFree)=", fallbackQuery, "found=", mappedRetryItems.length);
+            }
+          } catch (retryErr) {
+            if (isSpotifyAuthErrorMessage(retryErr)) {
+              authFailureDetected = true;
+              markSpotifyAuthFailure(args.accessToken, "direct-query-tag-free-retry");
+            }
+          }
+        }
+        if (!out.length && Date.now() < deadlineAt) {
+          const broadFallbackQuery = String(q).replace(/\bkorean\s+/i, "").trim();
+          if (broadFallbackQuery && broadFallbackQuery !== q) {
+            try {
+              const broad = new URLSearchParams();
+              broad.set("type", "track");
+              broad.set("limit", String(effectivePerQueryLimit));
+              broad.set("market", "from_token");
+              broad.set("q", broadFallbackQuery);
+              broad.set("offset", "0");
+              const remain = Math.max(0, deadlineAt - Date.now());
+              if (remain > 800) {
+                const broadTimeoutMs = Math.max(2200, Math.min(8000, remain - 120));
+                const broadJson = await spotifyGetJson<{ tracks?: { items?: any[] } }>(
+                  args.accessToken,
+                  `/search?${broad.toString()}`,
+                  broadTimeoutMs,
+                );
+                if (isAborted()) return queryAdded;
+                const broadItems = broadJson?.tracks?.items ?? [];
+                const mappedBroadItems = broadItems.map(mapTrackItemToSummary);
+                out.push(...mappedBroadItems);
+                emitFoundNow(mappedBroadItems);
+                console.warn("[SpotifySearchInternal] queryDone(broadFallback)=", broadFallbackQuery, "found=", mappedBroadItems.length);
+              }
+            } catch (broadErr) {
+              if (isSpotifyAuthErrorMessage(broadErr)) {
+                authFailureDetected = true;
+                markSpotifyAuthFailure(args.accessToken, "direct-query-broad-fallback");
+              }
+            }
+          }
+        }
+        if (!out.length && Date.now() < deadlineAt) {
+          const playlistFallback = await searchPlaylistTracksByQuery({
+            accessToken: args.accessToken,
+            query: q,
+            deadlineAt,
+            targetCount: effectivePerQueryLimit,
+          });
+          if (isAborted()) return queryAdded;
+          if (playlistFallback.length) {
+            console.warn(
+              `[Spotify] direct playlist fallback used size=${playlistFallback.length}`,
+            );
+          }
+          out.push(...playlistFallback);
+          emitFoundNow(playlistFallback);
+          console.warn("[SpotifySearchInternal] queryDone(playlistFallback)=", q, "found=", playlistFallback.length);
+        }
+      }
+    } catch (err) {
+      const msg = String((err as Error)?.message ?? err);
+      if (isSpotifyAuthErrorMessage(msg)) {
+        authFailureDetected = true;
+        markSpotifyAuthFailure(args.accessToken, "direct-query");
+        return queryAdded;
+      }
+      if (msg.includes("(400)")) {
+        const safeQ = sanitizeSearchQueryForSpotify(q);
+        if (safeQ && safeQ !== q) {
+          try {
+            const retry = new URLSearchParams();
+            retry.set("type", "track");
+            retry.set("limit", String(effectivePerQueryLimit));
+            retry.set("market", "from_token");
+            retry.set("q", safeQ);
+            retry.set("offset", String(offset));
+            const remainingMs = Math.max(0, deadlineAt - Date.now());
+            if (remainingMs > 800) {
+              const timeoutMs = Math.max(2200, Math.min(8500, remainingMs - 120));
+              const retryJson = await spotifyGetJson<{ tracks?: { items?: any[] } }>(
+                args.accessToken,
+                `/search?${retry.toString()}`,
+                timeoutMs,
+              );
+              if (isAborted()) return queryAdded;
+              const retryItems = retryJson?.tracks?.items ?? [];
+              const mappedRetryItems = retryItems.map(mapTrackItemToSummary);
+              out.push(...mappedRetryItems);
+              emitFoundNow(mappedRetryItems);
+              console.warn("[SpotifySearchInternal] queryDone(sanitized)=", safeQ, "found=", mappedRetryItems.length);
+            }
+          } catch (retryErr) {
+            if (isSpotifyAuthErrorMessage(retryErr)) {
+              authFailureDetected = true;
+              markSpotifyAuthFailure(args.accessToken, "direct-query-retry");
+            }
+          }
+        }
+      } else if (msg.includes("(429)")) {
+        rateLimitedFailures += 1;
+      } else if (!authFailureDetected) {
+        console.warn(`[Spotify] direct query search failed q=${q}: ${errorMessage(err)}`);
+      }
+    } finally {
+      console.warn("[SpotifySearchInternal] queryDone(final)=", q, "added=", queryAdded);
+    }
+    return queryAdded;
+  };
+
+  if (authFailureDetected) {
+    markSpotifyAuthFailure(args.accessToken, "direct-query-skip");
+    return [];
+  }
+  console.warn(
+    `[Spotify] direct query parallel requestId=${args.requestId || "-"} count=${parallelQueries.length} concurrency=${dynamicConcurrency} budgetMs=${budgetMs}`,
+  );
+  let cursor = 0;
+  let shouldHalt = false;
+  const workerCount = Math.max(1, Math.min(dynamicConcurrency, parallelQueries.length || 1));
+  const worker = async (): Promise<void> => {
+    while (!shouldHalt) {
+      if (isAborted()) return;
+      if (Date.now() >= deadlineAt) {
+        shouldHalt = true;
+        return;
+      }
+      const queryIndex = cursor;
+      cursor += 1;
+      if (queryIndex >= parallelQueries.length) return;
+      const query = parallelQueries[queryIndex] ?? "";
+      try {
+        const addedCount = await runSingleQuery(query, queryIndex);
+        if (isAborted()) return;
+        notifyQueryDone(query, queryIndex, addedCount);
+      } catch {
+        notifyQueryDone(query, queryIndex, 0);
+      }
+      if (rateLimitedFailures >= Math.max(2, Math.ceil(totalQueryCount * 0.4))) {
+        console.warn(
+          `[SpotifyDiag] stop on repeated 429 requestId=${args.requestId || "-"} rateLimitedFailures=${rateLimitedFailures} total=${totalQueryCount}`,
+        );
+        shouldHalt = true;
+        return;
+      }
+      if (
+        args.shouldStop?.({
+          requestId: args.requestId,
+          done: completedQueryCount,
+          total: totalQueryCount,
+          totalCollected: dedup.size,
+          lastQuery: query,
+        })
+      ) {
+        console.warn(
+          `[Spotify] direct query early-stop requestId=${args.requestId || "-"} done=${completedQueryCount}/${totalQueryCount} collected=${dedup.size}`,
+        );
+        shouldHalt = true;
+        return;
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: workerCount }, () => worker()));
+
+  return Array.from(dedup.values());
+}
+
 // ── 플레이리스트 저장 ─────────────────────────────────────
 export async function savePlaylistToSpotify(
   accessToken: string,
@@ -1308,17 +2585,32 @@ export async function savePlaylistToSpotify(
     ? String(lastMoodtunePlaylistIdByUser.get(userCacheKey) ?? "").trim()
     : "";
   if (trimmedExistingPlaylistId) {
-    await replacePlaylistItems(accessToken, trimmedExistingPlaylistId, uniqueUris);
-    if (userCacheKey) {
-      lastMoodtunePlaylistIdByUser.set(userCacheKey, trimmedExistingPlaylistId);
+    try {
+      await replacePlaylistItems(accessToken, trimmedExistingPlaylistId, uniqueUris);
+      if (userCacheKey) {
+        lastMoodtunePlaylistIdByUser.set(userCacheKey, trimmedExistingPlaylistId);
+      }
+      return { id: trimmedExistingPlaylistId };
+    } catch (err) {
+      // 기존 ID가 더 이상 수정 불가(권한/소유 변경 등)하면 신규 생성으로 안전 폴백.
+      if (!isForbiddenWriteError(err)) throw err;
+      console.warn(
+        `[Spotify] existing playlist replace forbidden. fallback to create: ${errorMessage(err)}`,
+      );
+      if (userCacheKey) {
+        lastMoodtunePlaylistIdByUser.delete(userCacheKey);
+      }
     }
-    return { id: trimmedExistingPlaylistId };
   }
   if (cachedPlaylistId) {
     try {
       await replacePlaylistItems(accessToken, cachedPlaylistId, uniqueUris);
       return { id: cachedPlaylistId };
     } catch (err) {
+      if (isForbiddenWriteError(err) && userCacheKey) {
+        // 금지된 playlistId를 캐시에 유지하면 매 저장마다 같은 403이 반복된다.
+        lastMoodtunePlaylistIdByUser.delete(userCacheKey);
+      }
       console.warn(
         `[Spotify] cached playlist replace failed: ${errorMessage(err)}`,
       );
@@ -1336,10 +2628,25 @@ export async function savePlaylistToSpotify(
       accessToken,
       name: createPayload.name,
       description: createPayload.description,
+      isPublic: createPayload.public,
     });
   } catch (err) {
     const status = (err as SpotifyApiError | undefined)?.status;
-    if (status === 429) {
+    if (status === 403 && createPayload.public === false) {
+      try {
+        // 일부 토큰/앱 권한 조합에서 private 수정 권한이 누락될 수 있어 public으로 1회 폴백.
+        created = await createMoodtunePlaylistWithRetry({
+          accessToken,
+          name: createPayload.name,
+          description: createPayload.description,
+          isPublic: true,
+        });
+      } catch (publicErr) {
+        throw new Error(
+          `[Spotify] playlist create failed (private/public). ${errorMessage(publicErr)}`,
+        );
+      }
+    } else if (status === 429) {
       try {
         // 생성이 막힐 때만 기존 Moodtune 플레이리스트 재사용을 시도한다.
         const existing = await getMoodtuneCreatedPlaylists(accessToken);
@@ -1359,8 +2666,10 @@ export async function savePlaylistToSpotify(
           `[Spotify] existing playlist reuse failed after 429: ${errorMessage(reuseErr)}`,
         );
       }
+      throw err;
+    } else {
+      throw err;
     }
-    throw err;
   }
 
   const playlistId = String(created?.id ?? "");
@@ -1374,11 +2683,24 @@ export async function savePlaylistToSpotify(
   try {
     await replacePlaylistItems(accessToken, playlistId, uniqueUris);
   } catch (err) {
-    throw new Error(
-      `[Spotify] add tracks failed for created playlist. 토큰 재로그인 후 다시 시도해 주세요. ${errorMessage(
-        err,
-      )}`,
-    );
+    if (isForbiddenWriteError(err)) {
+      try {
+        // 새로 생성된 빈 플레이리스트에서는 replace 실패 시 append 전략으로 재시도 가능.
+        await appendPlaylistItemsInChunks(accessToken, playlistId, uniqueUris);
+      } catch (appendErr) {
+        throw new Error(
+          `[Spotify] add tracks failed for created playlist (replace+append). 토큰 재로그인 후 다시 시도해 주세요. replace=${errorMessage(
+            err,
+          )}, append=${errorMessage(appendErr)}`,
+        );
+      }
+    } else {
+      throw new Error(
+        `[Spotify] add tracks failed for created playlist. 토큰 재로그인 후 다시 시도해 주세요. ${errorMessage(
+          err,
+        )}`,
+      );
+    }
   }
 
   return {
@@ -1396,4 +2718,5 @@ export async function removeSpotifyPlaylist(
     `/playlists/${encodeURIComponent(playlistId)}/followers`,
     "DELETE",
   );
+  invalidateMoodtunePlaylistCache();
 }
