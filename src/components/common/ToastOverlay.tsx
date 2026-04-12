@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   Animated,
   Easing,
+  Platform,
   StyleSheet,
   Text,
   View,
@@ -20,6 +21,7 @@ type ToastOverlayProps = {
 };
 
 const SHOW_MS = 2600;
+const USE_NATIVE_DRIVER = Platform.OS !== "web";
 
 export default function ToastOverlay({
   queue,
@@ -63,13 +65,13 @@ export default function ToastOverlay({
           toValue: 1,
           duration: 220,
           easing: Easing.out(Easing.cubic),
-          useNativeDriver: true,
+          useNativeDriver: USE_NATIVE_DRIVER,
         }),
         Animated.timing(translateY, {
           toValue: 0,
           duration: 220,
           easing: Easing.out(Easing.cubic),
-          useNativeDriver: true,
+          useNativeDriver: USE_NATIVE_DRIVER,
         }),
       ]),
       Animated.delay(SHOW_MS),
@@ -78,13 +80,13 @@ export default function ToastOverlay({
           toValue: 0,
           duration: 180,
           easing: Easing.in(Easing.quad),
-          useNativeDriver: true,
+          useNativeDriver: USE_NATIVE_DRIVER,
         }),
         Animated.timing(translateY, {
           toValue: -8,
           duration: 180,
           easing: Easing.in(Easing.quad),
-          useNativeDriver: true,
+          useNativeDriver: USE_NATIVE_DRIVER,
         }),
       ]),
     ]).start(() => {

@@ -81,6 +81,7 @@ import {
 } from "../../src/types";
 
 const { width: W, height: H } = Dimensions.get("window");
+const USE_NATIVE_DRIVER = Platform.OS !== "web";
 const HOME_SCROLL_BOTTOM_SPACER = Platform.OS === "ios" ? 188 : 198;
 const HOME_CTA_BOTTOM_OFFSET = Platform.OS === "ios" ? 92 : 98;
 const PREVIEW_BAR_BOTTOM_OFFSET = Platform.OS === "ios" ? 94 : 86;
@@ -1445,13 +1446,13 @@ export default function HomeScreen() {
     Animated.timing(fadeAnim, {
       toValue: 0,
       duration: 180,
-      useNativeDriver: true,
+      useNativeDriver: USE_NATIVE_DRIVER,
     }).start(() => {
       setPhase(next);
       Animated.timing(fadeAnim, {
         toValue: 1,
         duration: 280,
-        useNativeDriver: true,
+        useNativeDriver: USE_NATIVE_DRIVER,
       }).start();
     });
   }
@@ -2443,7 +2444,7 @@ function LoadingView({ insets, requestState, analysisProgress }: any) {
     Animated.timing(settledCardAnim, {
       toValue: 1,
       duration: 320,
-      useNativeDriver: true,
+      useNativeDriver: USE_NATIVE_DRIVER,
     }).start();
   }, [isAnalyzing, isFailed, progress, settledCardAnim]);
 
@@ -2455,7 +2456,7 @@ function LoadingView({ insets, requestState, analysisProgress }: any) {
       Animated.timing(previewCardAnim, {
         toValue: 0,
         duration: 220,
-        useNativeDriver: true,
+        useNativeDriver: USE_NATIVE_DRIVER,
       }).start();
       return () => {
         previewLoopStopRef.current = true;
@@ -2471,14 +2472,14 @@ function LoadingView({ insets, requestState, analysisProgress }: any) {
           toValue: 1,
           duration: 280,
           easing: Easing.out(Easing.cubic),
-          useNativeDriver: true,
+          useNativeDriver: USE_NATIVE_DRIVER,
         }),
         Animated.delay(1200),
         Animated.timing(previewCardAnim, {
           toValue: 0,
           duration: 260,
           easing: Easing.inOut(Easing.ease),
-          useNativeDriver: true,
+          useNativeDriver: USE_NATIVE_DRIVER,
         }),
       ]).start(({ finished }) => {
         if (!finished || previewLoopStopRef.current) return;

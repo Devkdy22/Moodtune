@@ -4,6 +4,7 @@ import {
   Easing,
   GestureResponderEvent,
   LayoutChangeEvent,
+  Platform,
   StyleSheet,
   View,
 } from "react-native";
@@ -12,6 +13,7 @@ import { Colors } from "../../constants/colors";
 
 const GREEN_RGB = "61,220,132";
 const MAX_RIPPLES = 5;
+const USE_NATIVE_DRIVER = Platform.OS !== "web";
 
 type BackgroundIntensity = "subtle" | "normal" | "strong";
 
@@ -115,13 +117,13 @@ export default function ScreenBackground({
           toValue: maxScale,
           duration,
           easing: Easing.out(Easing.ease),
-          useNativeDriver: true,
+          useNativeDriver: USE_NATIVE_DRIVER,
         }),
         Animated.timing(ripple.opacity, {
           toValue: 0,
           duration,
           easing: Easing.out(Easing.ease),
-          useNativeDriver: true,
+          useNativeDriver: USE_NATIVE_DRIVER,
         }),
       ]).start(() => removeRipple(id));
     },

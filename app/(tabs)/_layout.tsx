@@ -11,6 +11,8 @@ import React, { useEffect, useRef } from "react";
 import { Animated, Platform, Pressable, StyleSheet, View } from "react-native";
 import { Colors } from "../../src/constants/colors";
 
+const USE_NATIVE_DRIVER = Platform.OS !== "web";
+
 interface TabIconProps {
   Icon: React.ComponentType<{
     size?: number;
@@ -30,7 +32,7 @@ function TabIcon({ Icon, label, focused, center = false }: TabIconProps) {
       toValue: focused ? 1 : 0,
       tension: 90,
       friction: 10,
-      useNativeDriver: true,
+      useNativeDriver: USE_NATIVE_DRIVER,
     }).start();
   }, [focused, t]);
 
@@ -116,22 +118,22 @@ function RippleTabButton({
       Animated.timing(rippleScale, {
         toValue: 1.9,
         duration: 520,
-        useNativeDriver: true,
+        useNativeDriver: USE_NATIVE_DRIVER,
       }),
       Animated.timing(rippleOpacity, {
         toValue: 0,
         duration: 520,
-        useNativeDriver: true,
+        useNativeDriver: USE_NATIVE_DRIVER,
       }),
       Animated.timing(ringScale, {
         toValue: 2.5,
         duration: 620,
-        useNativeDriver: true,
+        useNativeDriver: USE_NATIVE_DRIVER,
       }),
       Animated.timing(ringOpacity, {
         toValue: 0,
         duration: 620,
-        useNativeDriver: true,
+        useNativeDriver: USE_NATIVE_DRIVER,
       }),
     ]).start();
   };
