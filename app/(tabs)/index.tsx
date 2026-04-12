@@ -1894,6 +1894,7 @@ function SettingPickerModal({
 }
 
 function SyncingView({ insets, userFirstName }: any) {
+  const syncWaveHeight = Math.round(H * 0.24);
   const progressAnim = useRef(new Animated.Value(0)).current;
   const [syncStep, setSyncStep] = useState(0);
   const [syncDone, setSyncDone] = useState(false);
@@ -1941,7 +1942,7 @@ function SyncingView({ insets, userFirstName }: any) {
       <View style={styles.syncWaveContainer}>
         <Waveform
           barCount={58}
-          height={Math.round(H * 0.36)}
+          height={syncWaveHeight}
           active
           intensity={0.62}
           mode="analyzing"
@@ -2755,7 +2756,8 @@ const styles = StyleSheet.create({
   syncHeaderBlock: {
     width: "100%",
     marginTop: 0,
-    marginBottom: 2,
+    marginBottom: 6,
+    zIndex: 3,
   },
   syncHeader: {
     flexDirection: "row",
@@ -2779,14 +2781,18 @@ const styles = StyleSheet.create({
     width: "100%",
     height: Math.round(H * 0.24),
     justifyContent: "center",
-    paddingHorizontal: 2,
-    marginTop: 4,
-    marginBottom: 8,
+    alignItems: "center",
+    paddingHorizontal: 6,
+    marginTop: 2,
+    marginBottom: 10,
+    overflow: "hidden",
+    zIndex: 1,
   },
   syncBottomBlock: {
     width: "100%",
     gap: 8,
     marginTop: 0,
+    zIndex: 2,
   },
   syncStepStack: {
     width: "100%",
