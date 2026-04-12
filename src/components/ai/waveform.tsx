@@ -51,7 +51,10 @@ export default function Waveform({
           import("@shopify/react-native-skia/lib/module/web"),
           import("./FluidAuroraWave"),
         ]);
-        await LoadSkiaWeb();
+        await LoadSkiaWeb({
+          locateFile: (file) =>
+            file.endsWith(".wasm") ? "/_expo/static/js/web/canvaskit.wasm" : file,
+        });
         if (alive) {
           setWebWaveReady(() => waveMod.default);
         }
