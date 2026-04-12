@@ -6,7 +6,7 @@
       "src": "package.json",
       "use": "@vercel/static-build",
       "config": {
-        "buildCommand": "npx expo export --platform web",
+        "buildCommand": "npx expo export --platform web && mkdir -p dist/_expo/static/js/web && cp node_modules/canvaskit-wasm/bin/full/canvaskit.wasm dist/_expo/static/js/web/canvaskit.wasm",
         "distDir": "dist"
       }
     }

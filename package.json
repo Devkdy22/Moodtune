@@ -7,7 +7,7 @@
     "android": "expo start --android",
     "ios": "expo start --ios",
     "web": "expo start --web",
-    "vercel-build": "expo export --platform web"
+    "vercel-build": "expo export --platform web && mkdir -p dist/_expo/static/js/web && cp node_modules/canvaskit-wasm/bin/full/canvaskit.wasm dist/_expo/static/js/web/canvaskit.wasm"
   },
   "dependencies": {
     "@expo-google-fonts/dm-sans": "^0.4.2",
