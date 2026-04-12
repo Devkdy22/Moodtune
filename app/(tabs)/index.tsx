@@ -2287,6 +2287,7 @@ function HomeInputView({
 //  S4 — LOADING VIEW
 // ════════════════════════════════════════════════════════
 function LoadingView({ insets, requestState, analysisProgress }: any) {
+  const loadingWaveHeight = Math.round(H * 0.34);
   const progress = useRef(new Animated.Value(0.1)).current;
   const settledCardAnim = useRef(new Animated.Value(0)).current;
   const previewCardAnim = useRef(new Animated.Value(0)).current;
@@ -2549,7 +2550,7 @@ function LoadingView({ insets, requestState, analysisProgress }: any) {
           <View style={styles.loadingWaveLift}>
             <Waveform
               barCount={56}
-              height={Math.round(H * 0.37)}
+              height={loadingWaveHeight}
               active={isAnalyzing || isSettled}
               intensity={waveformIntensity}
               mode={waveformMode}
@@ -3276,7 +3277,9 @@ const styles = StyleSheet.create({
     width: "100%",
     alignItems: "center",
     marginTop: 0,
+    marginBottom: 8,
     paddingHorizontal: 6,
+    zIndex: 3,
   },
   loadingLogoWrap: {
     marginBottom: 10,
@@ -3310,14 +3313,16 @@ const styles = StyleSheet.create({
     paddingVertical: 0,
     marginTop: 0,
     overflow: "hidden",
+    zIndex: 1,
   },
   loadingWaveLift: {
     width: "100%",
-    transform: [{ translateY: -12 }],
+    transform: [{ translateY: 0 }],
   },
   loadingLowerGroup: {
     width: "100%",
-    transform: [{ translateY: -14 }],
+    transform: [{ translateY: 0 }],
+    zIndex: 2,
   },
   loadingInfoSlot: {
     width: "100%",
