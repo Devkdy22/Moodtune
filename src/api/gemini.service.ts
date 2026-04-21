@@ -33,6 +33,7 @@ import {
   extractForcedGenresFromPrompt,
   extractForcedSpecialTagsFromPrompt,
 } from "../intent/extractForcedIntent";
+import { useAppStore } from "../store/useAppStore";
 
 const GEMINI_PROXY_URL_DEV = String(
   process.env.EXPO_PUBLIC_GEMINI_PROXY_URL_DEV ?? "",
@@ -2726,10 +2727,30 @@ function buildLocalParsedPlan(args: {
   };
 }
 
-async function callGemini(prompt: string): Promise<GeminiPlaylistJson> {
+function resolveGeminiProxyAuthToken(explicitToken?: string | null): string | null {
+  const direct = String(explicitToken ?? "").trim();
+  if (direct) return direct;
+  try {
+    const token = String(useAppStore.getState()?.spotifyTokens?.accessToken ?? "").trim();
+    return token || null;
+  } catch {
+    return null;
+  }
+}
+
+async function callGemini(
+  prompt: string,
+  spotifyAccessToken?: string | null,
+): Promise<GeminiPlaylistJson> {
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+  };
+  const bearer = resolveGeminiProxyAuthToken(spotifyAccessToken);
+  if (bearer) headers.Authorization = `Bearer ${bearer}`;
+
   const res = await fetch(buildGeminiProxyUrl(), {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers,
     body: JSON.stringify({ prompt }),
   });
   const raw = await res.text();
@@ -2762,9 +2783,10 @@ async function callGemini(prompt: string): Promise<GeminiPlaylistJson> {
 async function callGeminiWithTimeout(
   prompt: string,
   timeoutMs: number,
+  spotifyAccessToken?: string | null,
 ): Promise<GeminiPlaylistJson> {
   return Promise.race([
-    callGemini(prompt),
+    callGemini(prompt, spotifyAccessToken),
     new Promise<never>((_, reject) =>
       setTimeout(
         () => reject(new Error(`[GeminiProxy] request timed out (${timeoutMs}ms)`)),
@@ -14460,7 +14482,11 @@ export async function analyzeMoodAndRecommend(
     let parsed: GeminiPlaylistJson;
     let usedLocalPlan = false;
     try {
-      parsed = await callGeminiWithTimeout(prompt, GEMINI_MODEL_TIMEOUT_MS);
+      parsed = await callGeminiWithTimeout(
+        prompt,
+        GEMINI_MODEL_TIMEOUT_MS,
+        input.spotifyAccessToken,
+      );
     } catch (modelErr) {
       const msg = String((modelErr as Error)?.message ?? modelErr);
       const canFallbackToLocal =

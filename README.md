@@ -209,6 +209,11 @@ npm run web
 - `GEMINI_API_KEY` (server)
 - `GEMINI_PROXY_ALLOWED_ORIGINS` (server)
 
+보안 원칙:
+- `EXPO_PUBLIC_*`에는 secret/API key를 넣지 않습니다.
+- Gemini/OpenAI/provider key는 서버 환경변수로만 관리합니다.
+- 유출 점검은 `npm run security:scan-secrets`로 수행합니다.
+
 ---
 
 ## 12. 🎨 기획/디자인 출처

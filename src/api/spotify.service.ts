@@ -14,10 +14,6 @@ import {
 } from "../types";
 
 const CLIENT_ID = process.env.EXPO_PUBLIC_SPOTIFY_CLIENT_ID ?? "";
-const CLIENT_SECRET =
-  process.env.EXPO_PUBLIC_SPOTIFY_CLIENT_SECRET ??
-  process.env.SPOTIFY_CLIENT_SECRET ??
-  "";
 const SPOTIFY_ENABLE_METADATA_ENRICH = String(
   process.env.EXPO_PUBLIC_SPOTIFY_ENABLE_METADATA_ENRICH ?? "false",
 )
@@ -202,8 +198,6 @@ export async function exchangeSpotifyCodeForTokens(args: {
   body.set("code", args.code);
   body.set("redirect_uri", redirectUri);
   body.set("code_verifier", args.codeVerifier);
-  if (CLIENT_SECRET) body.set("client_secret", CLIENT_SECRET);
-
   const res = await fetch(SPOTIFY_DISCOVERY.tokenEndpoint, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
@@ -245,8 +239,6 @@ export async function refreshSpotifyAccessToken(args: {
   body.set("client_id", CLIENT_ID);
   body.set("grant_type", "refresh_token");
   body.set("refresh_token", args.refreshToken);
-  if (CLIENT_SECRET) body.set("client_secret", CLIENT_SECRET);
-
   const res = await fetch(SPOTIFY_DISCOVERY.tokenEndpoint, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },

@@ -28,15 +28,27 @@ const REQUESTS_PER_DAY_CAP = Math.max(
   Number.parseInt(process.env.GEMINI_PROXY_MAX_RPD || "180", 10),
 );
 const IP_WINDOW = new Map();
+const USER_WINDOW = new Map();
 const GLOBAL_DAY_WINDOW = { dayKey: "", count: 0 };
+const USER_DAY_WINDOW = new Map();
 let upstreamCooldownUntil = 0;
+const REQUIRE_SPOTIFY_AUTH =
+  String(process.env.GEMINI_PROXY_REQUIRE_SPOTIFY_AUTH ?? "true").trim().toLowerCase() !== "false";
+const MAX_PROMPT_CHARS = Math.max(
+  200,
+  Number.parseInt(process.env.GEMINI_PROXY_MAX_PROMPT_CHARS || "4000", 10),
+);
 const ALLOWED_ORIGINS = String(process.env.GEMINI_PROXY_ALLOWED_ORIGINS || "")
   .split(",")
   .map(v => v.trim().replace(/\/+$/, ""))
   .filter(Boolean);
 
 function json(res, status, payload) {
-  res.status(status).setHeader("content-type", "application/json; charset=utf-8");
+  res.status(status)
+    .setHeader("content-type", "application/json; charset=utf-8")
+    .setHeader("cache-control", "no-store")
+    .setHeader("x-content-type-options", "nosniff")
+    .setHeader("referrer-policy", "no-referrer");
   res.end(JSON.stringify(payload));
 }
 
@@ -52,6 +64,20 @@ function hitRateLimit(ip) {
   const entry = IP_WINDOW.get(ip);
   if (!entry || now >= entry.resetAt) {
     IP_WINDOW.set(ip, { count: 1, resetAt: now + WINDOW_MS });
+    return false;
+  }
+  if (entry.count >= REQUESTS_PER_WINDOW) {
+    return true;
+  }
+  entry.count += 1;
+  return false;
+}
+
+function hitUserRateLimit(userId) {
+  const now = Date.now();
+  const entry = USER_WINDOW.get(userId);
+  if (!entry || now >= entry.resetAt) {
+    USER_WINDOW.set(userId, { count: 1, resetAt: now + WINDOW_MS });
     return false;
   }
   if (entry.count >= REQUESTS_PER_WINDOW) {
@@ -78,6 +104,23 @@ function hitDailyCap() {
   return false;
 }
 
+function hitUserDailyCap(userId) {
+  const now = new Date();
+  const dayKey = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}-${String(
+    now.getUTCDate(),
+  ).padStart(2, "0")}`;
+  const entry = USER_DAY_WINDOW.get(userId);
+  if (!entry || entry.dayKey !== dayKey) {
+    USER_DAY_WINDOW.set(userId, { dayKey, count: 1 });
+    return false;
+  }
+  if (entry.count >= REQUESTS_PER_DAY_CAP) {
+    return true;
+  }
+  entry.count += 1;
+  return false;
+}
+
 function stripCodeFence(text) {
   return String(text || "").replace(/```json/gi, "").replace(/```/g, "").trim();
 }
@@ -99,6 +142,27 @@ function checkProxyAccess(req) {
     };
   }
   return { ok: true };
+}
+
+function extractBearerToken(req) {
+  const auth = String(req.headers.authorization || "").trim();
+  const match = auth.match(/^Bearer\s+(.+)$/i);
+  if (!match) return "";
+  return String(match[1] || "").trim();
+}
+
+async function verifySpotifyAccessToken(accessToken) {
+  const res = await fetch("https://api.spotify.com/v1/me", {
+    method: "GET",
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+  if (!res.ok) {
+    return { ok: false, status: res.status, userId: "" };
+  }
+  const data = await res.json().catch(() => null);
+  const userId = String(data?.id || "").trim();
+  if (!userId) return { ok: false, status: 401, userId: "" };
+  return { ok: true, status: 200, userId };
 }
 
 async function callGemini(prompt, apiKey) {
@@ -176,6 +240,11 @@ async function callGemini(prompt, apiKey) {
 }
 
 export default async function handler(req, res) {
+  if (req.method === "OPTIONS") {
+    res.status(204).setHeader("cache-control", "no-store");
+    return res.end();
+  }
+
   if (req.method === "GET") {
     return json(res, 200, {
       ok: true,
@@ -185,6 +254,7 @@ export default async function handler(req, res) {
       allowedModels: CANDIDATE_MODELS,
       apiVersions: API_VERSIONS,
       originAllowListEnabled: ALLOWED_ORIGINS.length > 0,
+      spotifyAuthRequired: REQUIRE_SPOTIFY_AUTH,
     });
   }
 
@@ -231,6 +301,45 @@ export default async function handler(req, res) {
     });
   }
 
+  let spotifyUserId = "";
+  if (REQUIRE_SPOTIFY_AUTH) {
+    const bearer = extractBearerToken(req);
+    if (!bearer) {
+      return json(res, 401, {
+        error: {
+          code: "unauthorized",
+          message: "Missing Spotify Bearer token",
+        },
+      });
+    }
+    const verified = await verifySpotifyAccessToken(bearer);
+    if (!verified.ok) {
+      return json(res, 401, {
+        error: {
+          code: "invalid_spotify_token",
+          message: `Spotify token validation failed (${verified.status})`,
+        },
+      });
+    }
+    spotifyUserId = verified.userId;
+    if (hitUserRateLimit(spotifyUserId)) {
+      return json(res, 429, {
+        error: {
+          code: "rate_limited_user",
+          message: "Too many requests for this Spotify user",
+        },
+      });
+    }
+    if (hitUserDailyCap(spotifyUserId)) {
+      return json(res, 429, {
+        error: {
+          code: "free_tier_daily_cap_user",
+          message: "Daily request cap reached for this Spotify user",
+        },
+      });
+    }
+  }
+
   const apiKey = String(process.env.GEMINI_API_KEY || "").trim();
   if (!apiKey) {
     return json(res, 500, {
@@ -244,6 +353,14 @@ export default async function handler(req, res) {
   const prompt = String(req.body?.prompt || "").trim();
   if (!prompt) {
     return json(res, 400, { error: { code: "invalid_request", message: "prompt is required" } });
+  }
+  if (prompt.length > MAX_PROMPT_CHARS) {
+    return json(res, 413, {
+      error: {
+        code: "prompt_too_large",
+        message: `prompt too large (max ${MAX_PROMPT_CHARS} chars)`,
+      },
+    });
   }
 
   try {
