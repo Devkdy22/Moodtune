@@ -166,7 +166,7 @@ export default function SpotifyPermissionsScreen() {
   }, [user?.product]);
 
   const onStart = async () => {
-    if (tokens?.accessToken && user && dataSummary && !loadingBundle && !bundleError) {
+    if (tokens?.accessToken && dataSummary && !loadingBundle && !bundleError) {
       if (user) setSpotifyUser(user);
       if (dataSummary) setSpotifyBootstrap(dataSummary);
       router.replace({
@@ -336,10 +336,10 @@ export default function SpotifyPermissionsScreen() {
           <View style={s.actions}>
             <Pressable
               onPress={onStart}
-              disabled={loadingBundle || !user || !dataSummary || !!bundleError}
+              disabled={loadingBundle || !dataSummary || !!bundleError}
               style={({ pressed }) => [
                 s.primaryWrap,
-                (loadingBundle || !user || !dataSummary || !!bundleError) && s.primaryDisabled,
+                (loadingBundle || !dataSummary || !!bundleError) && s.primaryDisabled,
                 pressed
                   ? { transform: [{ scale: 0.985 }, { translateY: 1 }] }
                   : null,

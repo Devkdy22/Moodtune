@@ -220,6 +220,8 @@ export async function exchangeSpotifyCodeForTokens(args: {
 
   spotifyAuthFailureCache = null;
   spotifyUserTokenProbeCache = new Map();
+  spotifyUserTokenProbeInFlight = new Map();
+  spotifyUserTokenProbeRateLimitedUntil = new Map();
   return {
     accessToken,
     refreshToken,
@@ -288,6 +290,8 @@ export async function refreshSpotifyAccessToken(args: {
   // Spotify may omit refresh_token on refresh responses; keep the existing one.
   spotifyAuthFailureCache = null;
   spotifyUserTokenProbeCache = new Map();
+  spotifyUserTokenProbeInFlight = new Map();
+  spotifyUserTokenProbeRateLimitedUntil = new Map();
   return {
     accessToken,
     refreshToken: args.refreshToken,
@@ -363,6 +367,8 @@ let spotifyUserTokenProbeCache = new Map<
   string,
   { isUserToken: boolean; checkedAt: number }
 >();
+let spotifyUserTokenProbeInFlight = new Map<string, Promise<void>>();
+let spotifyUserTokenProbeRateLimitedUntil = new Map<string, number>();
 
 export function invalidateMoodtunePlaylistCache(): void {
   moodtunePlaylistsCache = null;
@@ -379,38 +385,83 @@ async function ensureSpotifyUserAccessToken(
     throw new Error(`[Spotify] User token is required (${context}): empty token`);
   }
   const tokenPrefix = token.slice(0, 10);
+  const probeRateLimitedUntil = spotifyUserTokenProbeRateLimitedUntil.get(tokenPrefix) ?? 0;
+  if (probeRateLimitedUntil > Date.now()) {
+    return;
+  }
   const cached = spotifyUserTokenProbeCache.get(tokenPrefix);
   if (cached && Date.now() - cached.checkedAt < 10 * 60_000) {
     if (cached.isUserToken) return;
     throw new Error(`[Spotify] User token is required (${context})`);
   }
-  console.warn(`[Spotify] /me probe start context=${context}`);
-  const res = await spotifyFetch(
-    "/me",
-    { headers: { Authorization: `Bearer ${token}` } },
-    5_000,
-  );
-  const json: any = await res.json().catch(() => null);
-  if (res.ok) {
-    console.warn(`[Spotify] /me probe ok context=${context}`);
-    spotifyUserTokenProbeCache.set(tokenPrefix, {
-      isUserToken: true,
-      checkedAt: Date.now(),
-    });
+  const existingProbe = spotifyUserTokenProbeInFlight.get(tokenPrefix);
+  if (existingProbe) {
+    await existingProbe;
+    const nextCached = spotifyUserTokenProbeCache.get(tokenPrefix);
+    if (
+      nextCached &&
+      Date.now() - nextCached.checkedAt < 10 * 60_000 &&
+      !nextCached.isUserToken
+    ) {
+      throw new Error(`[Spotify] User token is required (${context})`);
+    }
     return;
   }
-  console.warn(
-    `[Spotify] /me probe failed context=${context} status=${res.status}`,
-  );
-  spotifyUserTokenProbeCache.set(tokenPrefix, {
-    isUserToken: false,
-    checkedAt: Date.now(),
-  });
-  throw new Error(
-    `[Spotify] User token is required (${context}). /me failed (${res.status}): ${summarizeSpotifyPayload(
-      json,
-    )}`,
-  );
+
+  const probePromise = (async () => {
+    console.warn(`[Spotify] /me probe start context=${context}`);
+    const res = await spotifyFetch(
+      "/me",
+      { headers: { Authorization: `Bearer ${token}` } },
+      5_000,
+    );
+    const json: any = await res.json().catch(() => null);
+    if (res.ok) {
+      console.warn(`[Spotify] /me probe ok context=${context}`);
+      spotifyUserTokenProbeCache.set(tokenPrefix, {
+        isUserToken: true,
+        checkedAt: Date.now(),
+      });
+      return;
+    }
+    console.warn(
+      `[Spotify] /me probe failed context=${context} status=${res.status}`,
+    );
+    if (res.status === 429) {
+      const retryMs = clampRetryAfterMs(
+        res.headers.get("retry-after"),
+        2_000,
+        20_000,
+      );
+      spotifyGlobalCooldownUntil = Math.max(
+        spotifyGlobalCooldownUntil,
+        Date.now() + retryMs,
+      );
+      spotifyUserTokenProbeRateLimitedUntil.set(
+        tokenPrefix,
+        Date.now() + retryMs,
+      );
+      return;
+    }
+    if (res.status === 400 || res.status === 401 || res.status === 403) {
+      spotifyUserTokenProbeCache.set(tokenPrefix, {
+        isUserToken: false,
+        checkedAt: Date.now(),
+      });
+      throw new Error(
+        `[Spotify] User token is required (${context}). /me failed (${res.status}): ${summarizeSpotifyPayload(
+          json,
+        )}`,
+      );
+    }
+  })();
+
+  spotifyUserTokenProbeInFlight.set(tokenPrefix, probePromise);
+  try {
+    await probePromise;
+  } finally {
+    spotifyUserTokenProbeInFlight.delete(tokenPrefix);
+  }
 }
 
 export async function validateSpotifyUserToken(
