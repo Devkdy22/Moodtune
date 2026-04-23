@@ -110,6 +110,8 @@ function isHardRefreshTokenInvalid(message: string): boolean {
   const msg = String(message ?? "").toLowerCase();
   if (!msg) return false;
   return (
+    msg.includes("invalid_client") ||
+    msg.includes("invalid client") ||
     msg.includes("invalid_grant") ||
     msg.includes("invalid refresh token") ||
     msg.includes("refresh token revoked") ||

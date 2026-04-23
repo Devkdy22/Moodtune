@@ -13,7 +13,7 @@ import {
   SpotifyUser,
 } from "../types";
 
-const CLIENT_ID = process.env.EXPO_PUBLIC_SPOTIFY_CLIENT_ID ?? "";
+const CLIENT_ID = (process.env.EXPO_PUBLIC_SPOTIFY_CLIENT_ID ?? "").trim();
 const SPOTIFY_ENABLE_METADATA_ENRICH = String(
   process.env.EXPO_PUBLIC_SPOTIFY_ENABLE_METADATA_ENRICH ?? "false",
 )
